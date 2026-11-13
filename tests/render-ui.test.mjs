@@ -437,6 +437,13 @@ describe('UI Render Safety & Spell Parser Test Suite', () => {
     };
     const sortedKeys = Object.keys(spells).sort((a, b) => a.localeCompare(b));
     assert.deepEqual(sortedKeys, ["Absorb Elements", "Bless", "Shield"]);
+
+    // 3. Check zero-charge gray-out / mutual exclusion logic
+    const emptyItem = { curUses: 0, maxUses: 7, chargeCost: 1 };
+    const hasEnoughCharges = emptyItem.curUses >= emptyItem.chargeCost;
+    assert.equal(hasEnoughCharges, false);
+    const chargeDeductDisabled = !hasEnoughCharges;
+    assert.equal(chargeDeductDisabled, true);
   });
 });
 

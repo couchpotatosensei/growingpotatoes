@@ -3582,29 +3582,35 @@ Click a numbered modifier badge to execute a roll.</div>
       let slotDeductDisabled = false;
       let slotDeductChecked = true;
       let chargeDeductChecked = false;
+      let chargeDeductDisabled = false;
 
       if (srcInfo) {
+        const hasEnoughCharges = srcInfo.hasItemUses ? (srcInfo.curUses >= (srcInfo.chargeCost || 1)) : true;
+        if (!hasEnoughCharges && srcInfo.hasItemUses) {
+          chargeDeductDisabled = true;
+        }
+
         if (srcInfo.isPureItem) {
           // Pure item/feat without normal slot casting (e.g. Wand, Staff)
           slotDeductDisabled = true;
           slotDeductChecked = false;
-          chargeDeductChecked = srcInfo.hasItemUses;
+          chargeDeductChecked = srcInfo.hasItemUses && hasEnoughCharges;
           resourceSelectorHtml = `
             <div style="display: flex; align-items: center; justify-content: space-between; padding: 3px 6px; background: #eef4ff; border-radius: 3px; border: 1px solid #c8d8f4; margin-bottom: 5px; font-size: 0.8em;">
               <span style="font-weight: 700; color: #3b5998;"><i class="fas fa-wand-magic-sparkles" style="margin-right: 4px;"></i> Source: ${srcInfo.name}</span>
-              <span style="font-weight: 700; color: #4b5d88; font-family: monospace;">${srcInfo.label}</span>
+              <span style="font-weight: 700; color: ${hasEnoughCharges ? '#4b5d88' : '#c62828'}; font-family: monospace;">${srcInfo.label}</span>
             </div>
           `;
         } else if (srcInfo.hasItemUses && srcInfo.maxUses > 0) {
           // Dual-cast spell (e.g. Magic Initiate, Fey Touched: 1 free feat use OR standard spell slots)
-          const featHasCharges = srcInfo.curUses > 0;
+          const featHasCharges = srcInfo.curUses >= (srcInfo.chargeCost || 1);
           chargeDeductChecked = featHasCharges;
           slotDeductChecked = !featHasCharges;
 
           resourceSelectorHtml = `
             <div style="display: flex; gap: 4px; margin-bottom: 5px; border-bottom: 1px dashed #d2d7df; padding-bottom: 5px;">
-              <label style="flex: 1; display: flex; align-items: center; gap: 4px; font-size: 0.78em; font-weight: 700; color: #3b5998; cursor: pointer; background: #fff; padding: 2px 4px; border-radius: 3px; border: 1px solid #c8d8f4;">
-                <input type="radio" name="spellCastResourceMode" value="charge" ${featHasCharges ? 'checked' : ''} style="margin: 0;" />
+              <label style="flex: 1; display: flex; align-items: center; gap: 4px; font-size: 0.78em; font-weight: 700; color: ${featHasCharges ? '#3b5998' : '#888'}; cursor: ${featHasCharges ? 'pointer' : 'not-allowed'}; opacity: ${featHasCharges ? '1' : '0.5'}; background: #fff; padding: 2px 4px; border-radius: 3px; border: 1px solid #c8d8f4;">
+                <input type="radio" name="spellCastResourceMode" value="charge" ${featHasCharges ? 'checked' : ''} ${!featHasCharges ? 'disabled' : ''} style="margin: 0;" />
                 Free/Feat (${srcInfo.curUses}/${srcInfo.maxUses})
               </label>
               <label style="flex: 1; display: flex; align-items: center; gap: 4px; font-size: 0.78em; font-weight: 700; color: #4b5d88; cursor: pointer; background: #fff; padding: 2px 4px; border-radius: 3px; border: 1px solid #d2d7df;">
@@ -3637,13 +3643,13 @@ Click a numbered modifier badge to execute a roll.</div>
           </label>
           ${srcInfo && srcInfo.hasItemUses ? (
             srcInfo.chargeCost > 0 ? `
-              <div id="charge-deduct-row" style="display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; background: #fff; border-radius: 3px; border: 1px solid #e0e6ed; font-size: 0.8em;">
-                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; flex: 1; min-width: 0;" title="Deduct charge/use from item on character sheet">
-                  <input type="checkbox" id="deductChargeToggle" data-item-id="${srcInfo.itemId}" ${chargeDeductChecked ? 'checked' : ''} style="margin: 0;" />
-                  <span style="font-weight: 600; color: #3b5998; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Deduct charge from ${srcInfo.name}</span>
+              <div id="charge-deduct-row" style="display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; background: #fff; border-radius: 3px; border: 1px solid #e0e6ed; font-size: 0.8em; opacity: ${chargeDeductDisabled ? '0.5' : '1'};">
+                <label style="display: flex; align-items: center; gap: 4px; cursor: ${chargeDeductDisabled ? 'not-allowed' : 'pointer'}; flex: 1; min-width: 0;" title="${chargeDeductDisabled ? 'No charges remaining on item' : 'Deduct charge/use from item on character sheet'}">
+                  <input type="checkbox" id="deductChargeToggle" data-item-id="${srcInfo.itemId}" ${chargeDeductChecked ? 'checked' : ''} ${chargeDeductDisabled ? 'disabled' : ''} style="margin: 0;" />
+                  <span style="font-weight: 600; color: ${chargeDeductDisabled ? '#888' : '#3b5998'}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Deduct charge from ${srcInfo.name}${chargeDeductDisabled ? ' (0 charges left)' : ''}</span>
                 </label>
                 <div style="display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0;" title="Number of charges to expend for this cast">
-                  <input type="number" id="deductChargeCostInput" min="1" max="${srcInfo.maxUses}" value="${srcInfo.chargeCost}" style="width: 32px; height: 18px; line-height: 16px; text-align: center; font-size: 0.82em; font-weight: 700; border: 1px solid #ccc; border-radius: 2px; padding: 0; background: #fafbfc; color: #1e293b; margin: 0;" />
+                  <input type="number" id="deductChargeCostInput" min="1" max="${srcInfo.maxUses}" value="${srcInfo.chargeCost}" ${chargeDeductDisabled ? 'disabled' : ''} style="width: 32px; height: 18px; line-height: 16px; text-align: center; font-size: 0.82em; font-weight: 700; border: 1px solid #ccc; border-radius: 2px; padding: 0; background: #fafbfc; color: #1e293b; margin: 0;" />
                   <span style="font-size: 0.72em; color: #666; font-weight: 600;">charges</span>
                 </div>
               </div>
@@ -5968,7 +5974,7 @@ Click a numbered modifier badge to execute a roll.</div>
           }
         });
 
-        // Dedicated uncheck handler for charge toggle to re-enable slot deduction
+        // Dedicated uncheck/check handler for charge toggle to keep slot/charge mutually exclusive
         html.on("change", "#deductChargeToggle", function () {
           const isChecked = $(this).is(":checked");
           const slotToggle = html.find("#deductSlotToggle");
@@ -5979,15 +5985,14 @@ Click a numbered modifier badge to execute a roll.</div>
             slotToggle.closest("label").css({ opacity: "1", cursor: "pointer" });
             if (radioSlot.length) radioSlot.prop("checked", true);
           } else {
-            if (radioCharge.length) {
-              radioCharge.prop("checked", true);
-              slotToggle.prop("checked", false).prop("disabled", true);
-              slotToggle.closest("label").css({ opacity: "0.6", cursor: "not-allowed" });
-            }
+            // When checking deduct charge, ensure slot deduction is unchecked and grayed out
+            slotToggle.prop("checked", false).prop("disabled", true);
+            slotToggle.closest("label").css({ opacity: "0.6", cursor: "not-allowed" });
+            if (radioCharge.length) radioCharge.prop("checked", true);
           }
         });
 
-        // Allow clicking slot toggle to switch mode to slot
+        // Allow clicking slot toggle to switch mode to slot and uncheck/gray out charge
         html.on("change", "#deductSlotToggle", function () {
           const isChecked = $(this).is(":checked");
           const chargeToggle = html.find("#deductChargeToggle");
