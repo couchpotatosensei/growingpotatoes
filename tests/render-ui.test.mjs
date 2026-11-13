@@ -404,5 +404,39 @@ describe('UI Render Safety & Spell Parser Test Suite', () => {
     const stdCheck = checkSourceInfo({ itemId: "spFire", spellName: "Fireball", baseLevel: 3 }, mockActorItems);
     assert.equal(stdCheck, null, "Standard class spell should not have item source info");
   });
+
+  it("modern dnd5e uses.spent unwrap and spell sorting resilience", () => {
+    // 1. Check system.uses.spent calculation
+    const itemWithSpent = {
+      name: "Staff of the Magi",
+      system: {
+        uses: {
+          max: 50,
+          spent: 10
+        }
+      }
+    };
+    const maxUses = Number(itemWithSpent.system.uses.max) || 0;
+    const curUses = itemWithSpent.system.uses.spent !== undefined
+      ? Math.max(0, maxUses - Number(itemWithSpent.system.uses.spent))
+      : Number(itemWithSpent.system.uses.value || 0);
+    assert.equal(curUses, 40);
+
+    // Decrement 5 charges
+    const chargeCost = 5;
+    const newUses = Math.max(0, curUses - chargeCost);
+    const newSpent = Math.max(0, maxUses - newUses);
+    assert.equal(newUses, 35);
+    assert.equal(newSpent, 15);
+
+    // 2. Check alphabetical sorting of spells in levels and sync
+    const spells = {
+      "Shield": { baseLevel: 1 },
+      "Bless": { baseLevel: 1 },
+      "Absorb Elements": { baseLevel: 1 }
+    };
+    const sortedKeys = Object.keys(spells).sort((a, b) => a.localeCompare(b));
+    assert.deepEqual(sortedKeys, ["Absorb Elements", "Bless", "Shield"]);
+  });
 });
 

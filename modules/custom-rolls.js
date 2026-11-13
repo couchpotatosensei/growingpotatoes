@@ -599,6 +599,13 @@ export async function syncSpellsWithSheet(actor, { promptUser = true } = {}) {
     }
   }
 
+  // Sort alphabetically by spell name before persisting
+  const sortedSpells = {};
+  for (const k of Object.keys(currentSpells).sort((a, b) => a.localeCompare(b))) {
+    sortedSpells[k] = currentSpells[k];
+  }
+  currentSpells = sortedSpells;
+
   // Save updated spell configs
   await setProfileData(actor, "spellConfigs", currentSpells);
   if (game.user.isGM) {
@@ -2392,12 +2399,16 @@ Click a numbered modifier badge to execute a roll.</div>
         const item = actor.items.get(t.itemRefId);
         if (item) {
           const uses = item.system.uses;
-          const cur = Number(uses?.value ?? t.value ?? 0);
           const max = Number(uses?.max ?? t.max ?? 0);
+          const cur = uses?.spent !== undefined ? Math.max(0, max - Number(uses.spent)) : Number(uses?.value ?? t.value ?? 0);
           if (isReset1 || isReset0) {
             const targetVal = isReset1 ? 1 : 0;
             if (cur !== targetVal) {
-              itemUpdates.push({ _id: item.id, "system.uses.value": targetVal });
+              itemUpdates.push({
+                _id: item.id,
+                "system.uses.spent": Math.max(0, max - targetVal),
+                "system.uses.value": targetVal
+              });
               t.value = targetVal;
               trackersModified = true;
               rechargeChatLines.push(`• <strong>${item.name}</strong>: Reset to ${targetVal}/${max}`);
@@ -2409,7 +2420,11 @@ Click a numbered modifier badge to execute a roll.</div>
                 const roll = new Roll(formula);
                 await roll.evaluate();
                 const newVal = Math.min(max, cur + roll.total);
-                itemUpdates.push({ _id: item.id, "system.uses.value": newVal });
+                itemUpdates.push({
+                  _id: item.id,
+                  "system.uses.spent": Math.max(0, max - newVal),
+                  "system.uses.value": newVal
+                });
                 t.value = newVal;
                 trackersModified = true;
                 rechargeChatLines.push(`• <strong>${item.name}</strong>: Regained ${roll.total} charges via <code>${formula}</code> (now ${newVal}/${max})`);
@@ -2417,7 +2432,11 @@ Click a numbered modifier badge to execute a roll.</div>
                 console.error("Recharge formula error", err);
               }
             } else {
-              itemUpdates.push({ _id: item.id, "system.uses.value": max });
+              itemUpdates.push({
+                _id: item.id,
+                "system.uses.spent": 0,
+                "system.uses.value": max
+              });
               t.value = max;
               trackersModified = true;
               rechargeChatLines.push(`• <strong>${item.name}</strong>: Restored to ${max}/${max}`);
@@ -2500,7 +2519,9 @@ Click a numbered modifier badge to execute a roll.</div>
         } else if (isDawn) {
           shouldRecharge = (per === "day" || per === "dawn" || per === "charges");
         }
-        if (shouldRecharge && uses.value < uses.max) {
+        const max = Number(uses.max) || 0;
+        const cur = uses.spent !== undefined ? Math.max(0, max - Number(uses.spent)) : Number(uses.value ?? 0);
+        if (shouldRecharge && cur < max) {
           let formula = "";
           if (uses.recovery && Array.isArray(uses.recovery)) {
             const formRec = uses.recovery.find(r => r.formula);
@@ -2514,15 +2535,21 @@ Click a numbered modifier badge to execute a roll.</div>
             try {
               const roll = new Roll(formula);
               await roll.evaluate();
-              const cur = Number(uses.value) || 0;
-              const max = Number(uses.max) || 0;
               const newVal = Math.min(max, cur + roll.total);
-              itemUpdates.push({ _id: item.id, "system.uses.value": newVal });
+              itemUpdates.push({
+                _id: item.id,
+                "system.uses.spent": Math.max(0, max - newVal),
+                "system.uses.value": newVal
+              });
               rechargeChatLines.push(`• <strong>${item.name}</strong>: Regained ${roll.total} charges via <code>${formula}</code> (now ${newVal}/${max})`);
             } catch (err) {}
           } else {
-            itemUpdates.push({ _id: item.id, "system.uses.value": uses.max });
-            rechargeChatLines.push(`• <strong>${item.name}</strong>: Restored to ${uses.max}/${uses.max}`);
+            itemUpdates.push({
+              _id: item.id,
+              "system.uses.spent": 0,
+              "system.uses.value": max
+            });
+            rechargeChatLines.push(`• <strong>${item.name}</strong>: Restored to ${max}/${max}`);
           }
         }
       }
@@ -2582,10 +2609,17 @@ Click a numbered modifier badge to execute a roll.</div>
       if (t.type === "item" && t.itemRefId) {
         const it = actor.items.get(t.itemRefId);
         const name = it?.name || t.label || t.name || "Item";
+        const max = Number(it?.system?.uses?.max ?? t.max ?? 0);
+        let val;
+        if (it?.system?.uses?.spent !== undefined) {
+          val = Math.max(0, max - Number(it.system.uses.spent));
+        } else {
+          val = Number(it?.system?.uses?.value ?? t.value ?? 0);
+        }
         return {
           label: name,
-          value: it?.system?.uses?.value ?? t.value ?? 0,
-          max: it?.system?.uses?.max ?? t.max ?? 0,
+          value: val,
+          max: max,
           rechargeFormula: t.rechargeFormula
         };
       } else if (t.type === "resource" && t.resourceSlot) {
@@ -2680,7 +2714,14 @@ Click a numbered modifier badge to execute a roll.</div>
           } else {
             if (t.type === "item" && t.itemRefId) {
               const item = actor.items.get(t.itemRefId);
-              if (item) await item.update({ "system.uses.value": newVal });
+              if (item) {
+                const max = Number(item.system?.uses?.max || 0);
+                const newSpent = Math.max(0, max - newVal);
+                await item.update({
+                  "system.uses.spent": newSpent,
+                  "system.uses.value": newVal
+                });
+              }
             } else if (t.type === "resource" && t.resourceSlot) {
               await actor.update({ [`system.resources.${t.resourceSlot}.value`]: newVal });
             }
@@ -2847,14 +2888,15 @@ Click a numbered modifier badge to execute a roll.</div>
               }
 
               const per = String(u.per || "").toLowerCase();
-              const resetOn = per === "sr" ? "sr" : (per === "lr" ? "lr" : (formula || per === "day" ? "dawn" : "none"));
+              const resetOn = per === "sr" ? "sr" : (per === "lr" ? "lr" : (formula || per === "day" || per === "dawn" || per === "charges" ? "dawn" : "none"));
 
+              const curItemUses = u.spent !== undefined ? Math.max(0, Number(u.max) - Number(u.spent)) : Number(u.value ?? u.max);
               available.push({
                 id,
                 type: "item",
                 itemRefId: it.id,
                 label: it.name,
-                value: u.value ?? u.max,
+                value: curItemUses,
                 max: u.max,
                 rechargeFormula: formula,
                 resetOn,
@@ -3502,8 +3544,10 @@ Click a numbered modifier badge to execute a roll.</div>
       // If atwill or innate with 0 consumption, chargeCost is 0
       let chargeCost = detectedCost !== null ? detectedCost : (prepMode === "atwill" ? 0 : 1);
 
-      const curUses = Number(targetItem.system?.uses?.value ?? 0);
       const maxUses = Number(targetItem.system?.uses?.max ?? 0);
+      const curUses = targetItem.system?.uses?.spent !== undefined
+        ? Math.max(0, maxUses - Number(targetItem.system.uses.spent))
+        : Number(targetItem.system?.uses?.value ?? 0);
       const isPureItem = Boolean(sourceItem) || isNonSpellType || (hasItemUses && !["prepared", "always"].includes(prepMode));
 
       return {
@@ -3784,6 +3828,12 @@ Click a numbered modifier badge to execute a roll.</div>
         const lvl = Math.clamp(Number(sp.baseLevel) || 0, 0, 9);
         if (!levels[lvl]) levels[lvl] = [];
         levels[lvl].push(key);
+      }
+
+      // Sort favorites and each spell level alphabetically
+      favorites.sort((a, b) => a.localeCompare(b));
+      for (const lvl of Object.keys(levels)) {
+        levels[lvl].sort((a, b) => a.localeCompare(b));
       }
 
       const collapsedState = window.CustomRolls._collapsedSpellLevels;
@@ -5780,6 +5830,11 @@ Click a numbered modifier badge to execute a roll.</div>
 
           config.targetIds = Array.from(game.user.targets).map(t => t.id);
           await globalThis.attackSocket.executeAsGM("runSpellAttackRoll", config, actor.id, game.user.id);
+
+          // Live real-time refresh of spell slots & inspector after cast
+          html.find("#inspector-spell").html(getSelectedSpellInspectorHtml());
+          html.find("#section-spell").html(renderSpellCards());
+          updateCardStyles();
         });
 
         // Generic Spell Attack Roll Handler
@@ -5910,6 +5965,36 @@ Click a numbered modifier badge to execute a roll.</div>
             slotToggle.prop("disabled", false).prop("checked", true);
             slotToggle.closest("label").css({ opacity: "1", cursor: "pointer" });
             chargeToggle.prop("checked", false);
+          }
+        });
+
+        // Dedicated uncheck handler for charge toggle to re-enable slot deduction
+        html.on("change", "#deductChargeToggle", function () {
+          const isChecked = $(this).is(":checked");
+          const slotToggle = html.find("#deductSlotToggle");
+          const radioSlot = html.find("input[name='spellCastResourceMode'][value='slot']");
+          const radioCharge = html.find("input[name='spellCastResourceMode'][value='charge']");
+          if (!isChecked) {
+            slotToggle.prop("disabled", false).prop("checked", true);
+            slotToggle.closest("label").css({ opacity: "1", cursor: "pointer" });
+            if (radioSlot.length) radioSlot.prop("checked", true);
+          } else {
+            if (radioCharge.length) {
+              radioCharge.prop("checked", true);
+              slotToggle.prop("checked", false).prop("disabled", true);
+              slotToggle.closest("label").css({ opacity: "0.6", cursor: "not-allowed" });
+            }
+          }
+        });
+
+        // Allow clicking slot toggle to switch mode to slot
+        html.on("change", "#deductSlotToggle", function () {
+          const isChecked = $(this).is(":checked");
+          const chargeToggle = html.find("#deductChargeToggle");
+          const radioSlot = html.find("input[name='spellCastResourceMode'][value='slot']");
+          if (isChecked) {
+            chargeToggle.prop("checked", false);
+            if (radioSlot.length) radioSlot.prop("checked", true);
           }
         });
 
@@ -6257,6 +6342,11 @@ Click a numbered modifier badge to execute a roll.</div>
 
           config.targetIds = Array.from(game.user.targets).map(t => t.id);
           await globalThis.attackSocket.executeAsGM("runSpellAttackRoll", config, actor.id, game.user.id);
+
+          // Live real-time refresh of spell slots & inspector after cast
+          html.find("#inspector-spell").html(getSelectedSpellInspectorHtml());
+          html.find("#section-spell").html(renderSpellCards());
+          updateCardStyles();
         });
 
         // Initial setup for compact mode

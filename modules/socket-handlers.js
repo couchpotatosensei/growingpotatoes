@@ -895,10 +895,16 @@ function registerSocketHandlers() {
       const chargeCost = Math.max(1, Number(config.deductChargeCost) || 1);
       const chargeItem = actor.items?.get(deductChargeItemId);
       if (chargeItem && Number(chargeItem.system?.uses?.max) > 0) {
-        const curUses = Number(chargeItem.system.uses.value) || 0;
         const maxUses = Number(chargeItem.system.uses.max) || 0;
+        const curUses = chargeItem.system.uses.spent !== undefined
+          ? Math.max(0, maxUses - Number(chargeItem.system.uses.spent))
+          : (Number(chargeItem.system.uses.value) || 0);
         const newUses = Math.max(0, curUses - chargeCost);
-        await chargeItem.update({ "system.uses.value": newUses });
+        const newSpent = Math.max(0, maxUses - newUses);
+        await chargeItem.update({
+          "system.uses.spent": newSpent,
+          "system.uses.value": newUses
+        });
         slotTag = `${chargeItem.name}: (${newUses}/${maxUses} charges left)`;
       }
     } else if (slotLvl > 0) {
@@ -2703,7 +2709,14 @@ function registerSocketHandlers() {
 
     if (type === "item" && itemRefId) {
       const item = actor.items.get(itemRefId);
-      if (item) await item.update({ "system.uses.value": newVal });
+      if (item) {
+        const max = Number(item.system?.uses?.max || 0);
+        const newSpent = Math.max(0, max - newVal);
+        await item.update({
+          "system.uses.spent": newSpent,
+          "system.uses.value": newVal
+        });
+      }
     } else if (type === "resource" && resourceSlot) {
       await actor.update({ [`system.resources.${resourceSlot}.value`]: newVal });
     }
