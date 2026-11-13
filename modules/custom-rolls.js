@@ -2696,6 +2696,7 @@ Click a numbered modifier badge to execute a roll.</div>
           containerHtml.find('#tracking-chips-container').html(renderChips());
           bindChipEvents();
         };
+        window.CustomRolls._refreshTrackingChips = refreshChips;
 
         const updateVal = async (t, delta, directValue = null) => {
           const live = getLiveTracker(t);
@@ -3548,7 +3549,9 @@ Click a numbered modifier badge to execute a roll.</div>
       const curUses = targetItem.system?.uses?.spent !== undefined
         ? Math.max(0, maxUses - Number(targetItem.system.uses.spent))
         : Number(targetItem.system?.uses?.value ?? 0);
-      const isPureItem = Boolean(sourceItem) || isNonSpellType || (hasItemUses && !["prepared", "always"].includes(prepMode));
+      const actorHasSpellSlots = Object.values(actor.system?.spells || {}).some(s => Number(s?.max) > 0);
+      const isEquipmentItem = ["equipment", "weapon", "consumable", "loot", "container", "tool"].includes(targetItem.type);
+      const isPureItem = (Boolean(sourceItem) && isEquipmentItem) || (!actorHasSpellSlots && isNonSpellType);
 
       return {
         item: targetItem,
@@ -3637,10 +3640,16 @@ Click a numbered modifier badge to execute a roll.</div>
           </select>
         </div>
         <div style="display: flex; flex-direction: column; gap: 3px; margin-top: 4px;">
-          <label style="display: flex; align-items: center; justify-content: space-between; font-size: 0.8em; cursor: ${slotDeductDisabled ? 'not-allowed' : 'pointer'}; opacity: ${slotDeductDisabled ? '0.6' : '1'}; padding: 2px 4px; background: #fff; border-radius: 3px; border: 1px solid #e0e6ed;" title="${slotDeductDisabled ? 'Spell is cast using item charges or feat uses rather than spell slots' : 'Deduct spell slot from sheet'}">
-            <span style="font-weight: 600; color: #4b5d88;">Deduct slot from sheet</span>
-            <input type="checkbox" id="deductSlotToggle" ${slotDeductChecked ? 'checked' : ''} ${slotDeductDisabled ? 'disabled' : ''} style="margin: 0;" />
-          </label>
+          <div id="slot-deduct-row" style="display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; background: #fff; border-radius: 3px; border: 1px solid #e0e6ed; font-size: 0.8em; opacity: ${slotDeductDisabled ? '0.6' : '1'};">
+            <label style="display: flex; align-items: center; gap: 4px; cursor: ${slotDeductDisabled ? 'not-allowed' : 'pointer'}; flex: 1; min-width: 0;" title="${slotDeductDisabled ? 'Spell is cast using item charges or feat uses rather than spell slots' : 'Deduct spell slot from sheet'}">
+              <input type="checkbox" id="deductSlotToggle" ${slotDeductChecked ? 'checked' : ''} ${slotDeductDisabled ? 'disabled' : ''} style="margin: 0;" />
+              <span style="font-weight: 600; color: #4b5d88; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Deduct slot from sheet</span>
+            </label>
+            <div style="display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0;" title="Spell slot cost">
+              <input type="number" min="1" max="1" value="1" disabled style="width: 32px; height: 18px; line-height: 16px; text-align: center; font-size: 0.82em; font-weight: 700; border: 1px solid #ccc; border-radius: 2px; padding: 0; background: #fafbfc; color: #1e293b; margin: 0; opacity: 0.85;" />
+              <span style="font-size: 0.72em; color: #666; font-weight: 600;">slot</span>
+            </div>
+          </div>
           ${srcInfo && srcInfo.hasItemUses ? (
             srcInfo.chargeCost > 0 ? `
               <div id="charge-deduct-row" style="display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; background: #fff; border-radius: 3px; border: 1px solid #e0e6ed; font-size: 0.8em; opacity: ${chargeDeductDisabled ? '0.5' : '1'};">
@@ -5837,10 +5846,13 @@ Click a numbered modifier badge to execute a roll.</div>
           config.targetIds = Array.from(game.user.targets).map(t => t.id);
           await globalThis.attackSocket.executeAsGM("runSpellAttackRoll", config, actor.id, game.user.id);
 
-          // Live real-time refresh of spell slots & inspector after cast
+          // Live real-time refresh of spell slots, inspector, and tracking stuff after cast
           html.find("#inspector-spell").html(getSelectedSpellInspectorHtml());
           html.find("#section-spell").html(renderSpellCards());
           updateCardStyles();
+          if (typeof window.CustomRolls?._refreshTrackingChips === "function") {
+            window.CustomRolls._refreshTrackingChips();
+          }
         });
 
         // Generic Spell Attack Roll Handler
@@ -6348,10 +6360,13 @@ Click a numbered modifier badge to execute a roll.</div>
           config.targetIds = Array.from(game.user.targets).map(t => t.id);
           await globalThis.attackSocket.executeAsGM("runSpellAttackRoll", config, actor.id, game.user.id);
 
-          // Live real-time refresh of spell slots & inspector after cast
+          // Live real-time refresh of spell slots, inspector, and tracking stuff after cast
           html.find("#inspector-spell").html(getSelectedSpellInspectorHtml());
           html.find("#section-spell").html(renderSpellCards());
           updateCardStyles();
+          if (typeof window.CustomRolls?._refreshTrackingChips === "function") {
+            window.CustomRolls._refreshTrackingChips();
+          }
         });
 
         // Initial setup for compact mode

@@ -906,6 +906,14 @@ function registerSocketHandlers() {
           "system.uses.value": newUses
         });
         slotTag = `${chargeItem.name}: (${newUses}/${maxUses} charges left)`;
+
+        // Keep trackingStuff flag synchronized in real-time
+        const trackers = actor.getFlag("world", "trackingStuff") || [];
+        const t = trackers.find(x => x.itemRefId === deductChargeItemId || x.id === `item_${deductChargeItemId}`);
+        if (t) {
+          t.value = newUses;
+          await actor.setFlag("world", "trackingStuff", trackers);
+        }
       }
     } else if (slotLvl > 0) {
       const slotKey = `system.spells.spell${slotLvl}.value`;
