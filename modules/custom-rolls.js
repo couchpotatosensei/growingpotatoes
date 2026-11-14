@@ -5443,6 +5443,195 @@ Click a numbered modifier badge to execute a roll.</div>
               border-color: #a78bfa !important;
             }
 
+            /* --- Side Dice Tray Flyout Styles --- */
+            .app.dialog .dice-stuff-flyout-tray {
+              position: absolute;
+              top: 0;
+              left: 40px;
+              width: 58px;
+              background: url("/ui/parchment.jpg") repeat, #fbf7ef;
+              border: 1px solid #c0c6ce;
+              border-radius: 6px;
+              box-shadow: 3px 4px 12px rgba(0,0,0,0.3);
+              padding: 5px 4px;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              gap: 4px;
+              z-index: 105;
+              box-sizing: border-box;
+            }
+            .app.dialog .dice-stuff-flyout-tray button {
+              margin: 0;
+              padding: 0;
+              cursor: pointer;
+              box-sizing: border-box;
+            }
+            .app.dialog .dice-stuff-flyout-die-btn {
+              position: relative;
+              width: 44px;
+              height: 28px;
+              font-size: 0.82em;
+              font-weight: 700;
+              background: #fff;
+              border: 1px solid #b0b8c4;
+              border-radius: 4px;
+              color: #2b3a4a;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              transition: background 0.1s ease, border-color 0.1s ease;
+            }
+            .app.dialog .dice-stuff-flyout-die-btn:hover {
+              background: #f0f4ff;
+              border-color: #7289da;
+              color: #7289da;
+            }
+            .app.dialog .dice-stuff-flyout-badge {
+              position: absolute;
+              top: -4px;
+              right: -4px;
+              background: #e03e3e;
+              color: #fff;
+              font-size: 0.72em;
+              font-weight: 800;
+              min-width: 15px;
+              height: 15px;
+              line-height: 15px;
+              border-radius: 8px;
+              padding: 0 2px;
+              text-align: center;
+              box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+              pointer-events: none;
+            }
+            .app.dialog .dice-stuff-flyout-mode-btn {
+              width: 46px;
+              height: 22px;
+              font-size: 0.72em;
+              font-weight: 800;
+              border-radius: 3px;
+              border: 1px solid #7289da;
+              background: #eef2ff;
+              color: #4338ca;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              text-transform: uppercase;
+              letter-spacing: 0.3px;
+            }
+            .app.dialog .dice-stuff-flyout-mode-btn.mode-adv {
+              background: #ecfdf5;
+              border-color: #059669;
+              color: #047857;
+            }
+            .app.dialog .dice-stuff-flyout-mode-btn.mode-dis {
+              background: #fef2f2;
+              border-color: #dc2626;
+              color: #b91c1c;
+            }
+            .app.dialog .dice-stuff-flyout-roll-btn {
+              width: 46px;
+              height: 26px;
+              font-size: 0.78em;
+              font-weight: 800;
+              background: #2563eb;
+              border: 1px solid #1d4ed8;
+              color: #fff;
+              border-radius: 4px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              gap: 3px;
+              box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+            }
+            .app.dialog .dice-stuff-flyout-roll-btn:hover {
+              background: #1d4ed8;
+            }
+            .app.dialog .dice-stuff-flyout-clear-btn {
+              width: 46px;
+              height: 20px;
+              font-size: 0.75em;
+              font-weight: 700;
+              background: #f1f5f9;
+              border: 1px solid #cbd5e1;
+              color: #64748b;
+              border-radius: 3px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+            }
+            .app.dialog .dice-stuff-flyout-clear-btn:hover {
+              background: #fee2e2;
+              border-color: #f87171;
+              color: #dc2626;
+            }
+
+            /* Tactical Glass Flyout */
+            .app.dialog.cheapdice-theme-glass .dice-stuff-flyout-tray {
+              background: rgba(15, 23, 42, 0.88) !important;
+              backdrop-filter: blur(16px) !important;
+              -webkit-backdrop-filter: blur(16px) !important;
+              border: 1px solid rgba(255, 255, 255, 0.18) !important;
+              box-shadow: 4px 6px 18px rgba(0, 0, 0, 0.6) !important;
+            }
+            .app.dialog.cheapdice-theme-glass .dice-stuff-flyout-die-btn {
+              background: rgba(255, 255, 255, 0.08) !important;
+              border: 1px solid rgba(255, 255, 255, 0.15) !important;
+              color: #e0e7ff !important;
+            }
+            .app.dialog.cheapdice-theme-glass .dice-stuff-flyout-die-btn:hover {
+              background: rgba(56, 189, 248, 0.25) !important;
+              border-color: #38bdf8 !important;
+              color: #38bdf8 !important;
+            }
+            .app.dialog.cheapdice-theme-glass .dice-stuff-flyout-clear-btn {
+              background: rgba(255, 255, 255, 0.05) !important;
+              border-color: rgba(255, 255, 255, 0.15) !important;
+              color: #94a3b8 !important;
+            }
+
+            /* Slate Flyout */
+            .app.dialog.cheapdice-theme-slate .dice-stuff-flyout-tray {
+              background: #1e293b !important;
+              border: 1px solid #334155 !important;
+            }
+            .app.dialog.cheapdice-theme-slate .dice-stuff-flyout-die-btn {
+              background: #0f172a !important;
+              border: 1px solid #334155 !important;
+              color: #e2e8f0 !important;
+            }
+            .app.dialog.cheapdice-theme-slate .dice-stuff-flyout-die-btn:hover {
+              background: #1e293b !important;
+              border-color: #38bdf8 !important;
+              color: #38bdf8 !important;
+            }
+            .app.dialog.cheapdice-theme-slate .dice-stuff-flyout-clear-btn {
+              background: #0f172a !important;
+              border-color: #334155 !important;
+              color: #94a3b8 !important;
+            }
+
+            /* Arcane Midnight Flyout */
+            .app.dialog.cheapdice-theme-arcane .dice-stuff-flyout-tray {
+              background: #18152e !important;
+              border: 1px solid #4a3e75 !important;
+            }
+            .app.dialog.cheapdice-theme-arcane .dice-stuff-flyout-die-btn {
+              background: #100d20 !important;
+              border: 1px solid #3b3060 !important;
+              color: #e0d8f7 !important;
+            }
+            .app.dialog.cheapdice-theme-arcane .dice-stuff-flyout-die-btn:hover {
+              background: #231c3e !important;
+              border-color: #a78bfa !important;
+              color: #a78bfa !important;
+            }
+            .app.dialog.cheapdice-theme-arcane .dice-stuff-flyout-clear-btn {
+              background: #100d20 !important;
+              border-color: #3b3060 !important;
+              color: #7c729c !important;
+            }
+
             /* Spell Filter Bar Themes */
             .app.dialog.cheapdice-theme-arcane #spell-filter-bar {
               border-bottom-color: #38312e !important;
@@ -6926,7 +7115,47 @@ Click a numbered modifier badge to execute a roll.</div>
           renderSideTabs();
         });
 
-        // --- Render Right-Side Action Tabs ---
+        // --- Render Right-Side Action Tabs & Dice Tray Flyout ---
+        let flyoutDiceCounts = { d4: 0, d6: 0, d8: 0, d10: 0, d12: 0, d20: 0, d100: 0 };
+        let flyoutRollMode = "norm"; // "norm" | "adv" | "dis"
+        let isDiceFlyoutOpen = false;
+
+        function updateChatFormula() {
+          const chatInput = document.querySelector("#chat-message");
+          const parts = [];
+
+          const diceOrder = ["d4", "d6", "d8", "d10", "d12", "d20", "d100"];
+          for (const d of diceOrder) {
+            const count = flyoutDiceCounts[d] || 0;
+            if (count > 0) {
+              if (d === "d20") {
+                if (flyoutRollMode === "adv") {
+                  parts.push(count === 1 ? "2d20kh" : `${count + 1}d20kh`);
+                } else if (flyoutRollMode === "dis") {
+                  parts.push(count === 1 ? "2d20kl" : `${count + 1}d20kl`);
+                } else {
+                  parts.push(`${count}d20`);
+                }
+              } else {
+                parts.push(`${count}${d}`);
+              }
+            }
+          }
+
+          if (parts.length === 0) {
+            if (chatInput && chatInput.value.startsWith("/r ")) {
+              chatInput.value = "";
+            }
+            return "";
+          }
+
+          const formula = parts.join(" + ");
+          if (chatInput) {
+            chatInput.value = `/r ${formula}`;
+          }
+          return formula;
+        }
+
         function renderSideTabs() {
           let sideTabs = dialogApp.find(".dice-stuff-side-tabs");
           if (sideTabs.length === 0) {
@@ -6945,6 +7174,22 @@ Click a numbered modifier badge to execute a roll.</div>
           }
           sideTabs.empty();
 
+          // 1. Dice Tray Trigger Tab (Placed above Slot 1)
+          const diceTabBtn = $(`
+            <button type="button" class="dice-stuff-side-tab-btn ${isDiceFlyoutOpen ? 'tab-assigned' : ''}" id="dice-stuff-flyout-trigger" title="Quick Dice Tray" style="margin-bottom: 2px; ${isDiceFlyoutOpen ? 'border-color: #2563eb; color: #2563eb;' : ''}">
+              <i class="fas fa-dice"></i>
+            </button>
+          `);
+
+          diceTabBtn.on("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            isDiceFlyoutOpen = !isDiceFlyoutOpen;
+            renderSideTabs();
+          });
+          sideTabs.append(diceTabBtn);
+
+          // 2. Action Slots 1 to 4
           const slots = [
             { num: 1, hotbar: 47 },
             { num: 2, hotbar: 48 },
@@ -6969,6 +7214,125 @@ Click a numbered modifier badge to execute a roll.</div>
 
             sideTabs.append(tabBtn);
           }
+
+          // 3. Render or Remove the Vertical Flyout Tray (Flying out to the right)
+          let flyoutTray = sideTabs.find(".dice-stuff-flyout-tray");
+          if (!isDiceFlyoutOpen) {
+            flyoutTray.remove();
+            return;
+          }
+
+          if (flyoutTray.length === 0) {
+            flyoutTray = $(`<div class="dice-stuff-flyout-tray"></div>`);
+            sideTabs.append(flyoutTray);
+          }
+          flyoutTray.empty();
+
+          // Mode Toggle Button: NORM -> ADV -> DIS -> NORM
+          const modeLabels = { norm: "NORM", adv: "ADV", dis: "DIS" };
+          const modeClasses = { norm: "", adv: "mode-adv", dis: "mode-dis" };
+          const modeBtn = $(`
+            <button type="button" class="dice-stuff-flyout-mode-btn ${modeClasses[flyoutRollMode]}" title="Click to cycle Advantage / Disadvantage / Normal">
+              ${modeLabels[flyoutRollMode]}
+            </button>
+          `);
+          modeBtn.on("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (flyoutRollMode === "norm") flyoutRollMode = "adv";
+            else if (flyoutRollMode === "adv") flyoutRollMode = "dis";
+            else flyoutRollMode = "norm";
+            updateChatFormula();
+            renderSideTabs();
+          });
+          flyoutTray.append(modeBtn);
+
+          // Dice Buttons (Vertical Stack)
+          const diceDefs = [
+            { id: "d4", label: "d4" },
+            { id: "d6", label: "d6" },
+            { id: "d8", label: "d8" },
+            { id: "d10", label: "d10" },
+            { id: "d12", label: "d12" },
+            { id: "d20", label: "d20" },
+            { id: "d100", label: "d100" }
+          ];
+
+          for (const d of diceDefs) {
+            const count = flyoutDiceCounts[d.id] || 0;
+            const badgeHtml = count > 0 ? `<span class="dice-stuff-flyout-badge">${count}</span>` : "";
+            const dieBtn = $(`
+              <button type="button" class="dice-stuff-flyout-die-btn" data-die="${d.id}" title="Left-click: +1 ${d.label} | Right-click: -1">
+                ${d.label}
+                ${badgeHtml}
+              </button>
+            `);
+
+            // Left-Click: Increment
+            dieBtn.on("click", (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              flyoutDiceCounts[d.id] = (flyoutDiceCounts[d.id] || 0) + 1;
+              updateChatFormula();
+              renderSideTabs();
+            });
+
+            // Right-Click: Decrement
+            dieBtn.on("contextmenu", (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if ((flyoutDiceCounts[d.id] || 0) > 0) {
+                flyoutDiceCounts[d.id] -= 1;
+                updateChatFormula();
+                renderSideTabs();
+              }
+            });
+
+            flyoutTray.append(dieBtn);
+          }
+
+          // Clear Button
+          const clearBtn = $(`
+            <button type="button" class="dice-stuff-flyout-clear-btn" title="Reset all dice counts">
+              Clear
+            </button>
+          `);
+          clearBtn.on("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            flyoutDiceCounts = { d4: 0, d6: 0, d8: 0, d10: 0, d12: 0, d20: 0, d100: 0 };
+            updateChatFormula();
+            renderSideTabs();
+          });
+          flyoutTray.append(clearBtn);
+
+          // Roll Button
+          const rollBtn = $(`
+            <button type="button" class="dice-stuff-flyout-roll-btn" title="Roll formula to chat">
+              Roll
+            </button>
+          `);
+          rollBtn.on("click", async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const formula = updateChatFormula();
+            if (!formula) return;
+
+            try {
+              const roll = new Roll(formula);
+              await roll.evaluate();
+              const speaker = ChatMessage.getSpeaker({ actor });
+              await roll.toMessage({ speaker });
+            } catch (err) {
+              console.error("Dice Stuff | Error rolling formula:", err);
+            }
+
+            // Reset after rolling
+            flyoutDiceCounts = { d4: 0, d6: 0, d8: 0, d10: 0, d12: 0, d20: 0, d100: 0 };
+            updateChatFormula();
+            renderSideTabs();
+          });
+          flyoutTray.append(rollBtn);
         }
 
         renderSideTabs();

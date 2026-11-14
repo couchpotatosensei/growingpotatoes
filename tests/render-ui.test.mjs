@@ -445,5 +445,41 @@ describe('UI Render Safety & Spell Parser Test Suite', () => {
     const chargeDeductDisabled = !hasEnoughCharges;
     assert.equal(chargeDeductDisabled, true);
   });
+
+  it("Dice Stuff side tray formula builder handles normal, advantage, and disadvantage", () => {
+    function buildFormula(counts, mode) {
+      const parts = [];
+      const diceOrder = ["d4", "d6", "d8", "d10", "d12", "d20", "d100"];
+      for (const d of diceOrder) {
+        const count = counts[d] || 0;
+        if (count > 0) {
+          if (d === "d20") {
+            if (mode === "adv") {
+              parts.push(count === 1 ? "2d20kh" : `${count + 1}d20kh`);
+            } else if (mode === "dis") {
+              parts.push(count === 1 ? "2d20kl" : `${count + 1}d20kl`);
+            } else {
+              parts.push(`${count}d20`);
+            }
+          } else {
+            parts.push(`${count}${d}`);
+          }
+        }
+      }
+      return parts.join(" + ");
+    }
+
+    // Normal multi-dice
+    assert.equal(buildFormula({ d10: 6 }, "norm"), "6d10");
+    assert.equal(buildFormula({ d10: 6, d6: 2 }, "norm"), "2d6 + 6d10");
+
+    // d20 modes
+    assert.equal(buildFormula({ d20: 1 }, "norm"), "1d20");
+    assert.equal(buildFormula({ d20: 1 }, "adv"), "2d20kh");
+    assert.equal(buildFormula({ d20: 1 }, "dis"), "2d20kl");
+
+    // Combined d20 adv + extra damage die
+    assert.equal(buildFormula({ d20: 1, d8: 1 }, "adv"), "1d8 + 2d20kh");
+  });
 });
 
