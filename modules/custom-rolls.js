@@ -7121,13 +7121,20 @@ Click a numbered modifier badge to execute a roll.</div>
         let isDiceFlyoutOpen = false;
 
         function getChatInputElement() {
-          return document.querySelector("#chat-message") 
-              || (ui.chat?.element ? ui.chat.element.find("#chat-message")[0] : null)
-              || document.querySelector("textarea[name='message']");
+          let el = document.getElementById("chat-message");
+          if (!el && ui.chat?.element) {
+            el = ui.chat.element.find("#chat-message")[0];
+          }
+          if (!el && ui.chat?._element) {
+            el = ui.chat._element.find("#chat-message")[0];
+          }
+          if (!el) {
+            el = document.querySelector("#sidebar textarea, #chat-form textarea, textarea[name='message']");
+          }
+          return el;
         }
 
         function updateChatFormula() {
-          const chatInput = getChatInputElement();
           const parts = [];
 
           const diceOrder = ["d4", "d6", "d8", "d10", "d12", "d20", "d100"];
@@ -7148,21 +7155,35 @@ Click a numbered modifier badge to execute a roll.</div>
             }
           }
 
-          if (parts.length === 0) {
-            if (chatInput && (chatInput.value.startsWith("/r ") || chatInput.value.startsWith("/roll "))) {
-              chatInput.value = "";
-              chatInput.dispatchEvent(new Event("input", { bubbles: true }));
-              chatInput.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-            return "";
+          const formula = parts.length > 0 ? parts.join(" + ") : "";
+
+          // Ensure chat tab is active if sidebar is available
+          if (parts.length > 0 && ui.sidebar && typeof ui.sidebar.activateTab === "function") {
+            try {
+              if (ui.sidebar.activeTab !== "chat") {
+                ui.sidebar.activateTab("chat");
+              }
+            } catch (_) {}
           }
 
-          const formula = parts.join(" + ");
+          const chatInput = getChatInputElement();
           if (chatInput) {
-            chatInput.value = `/r ${formula}`;
-            chatInput.dispatchEvent(new Event("input", { bubbles: true }));
-            chatInput.dispatchEvent(new Event("change", { bubbles: true }));
+            if (formula) {
+              chatInput.value = `/r ${formula}`;
+            } else if (chatInput.value.startsWith("/r ") || chatInput.value.startsWith("/roll ")) {
+              chatInput.value = "";
+            }
+            // Trigger native & jQuery events to ensure all Foundry/plugin listeners update
+            try {
+              chatInput.dispatchEvent(new Event("input", { bubbles: true }));
+              chatInput.dispatchEvent(new Event("change", { bubbles: true }));
+              chatInput.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+              if (window.$) {
+                $(chatInput).trigger("input").trigger("change").trigger("keyup");
+              }
+            } catch (_) {}
           }
+
           return formula;
         }
 
