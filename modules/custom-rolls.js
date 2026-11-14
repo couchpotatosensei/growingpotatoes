@@ -7120,23 +7120,8 @@ Click a numbered modifier badge to execute a roll.</div>
         let flyoutRollMode = "norm"; // "norm" | "adv" | "dis"
         let isDiceFlyoutOpen = false;
 
-        function getChatInputElement() {
-          let el = document.getElementById("chat-message");
-          if (!el && ui.chat?.element) {
-            el = ui.chat.element.find("#chat-message")[0];
-          }
-          if (!el && ui.chat?._element) {
-            el = ui.chat._element.find("#chat-message")[0];
-          }
-          if (!el) {
-            el = document.querySelector("#sidebar textarea, #chat-form textarea, textarea[name='message']");
-          }
-          return el;
-        }
-
-        function updateChatFormula() {
+        function getFlyoutFormula() {
           const parts = [];
-
           const diceOrder = ["d4", "d6", "d8", "d10", "d12", "d20", "d100"];
           for (const d of diceOrder) {
             const count = flyoutDiceCounts[d] || 0;
@@ -7154,37 +7139,7 @@ Click a numbered modifier badge to execute a roll.</div>
               }
             }
           }
-
-          const formula = parts.length > 0 ? parts.join(" + ") : "";
-
-          // Ensure chat tab is active if sidebar is available
-          if (parts.length > 0 && ui.sidebar && typeof ui.sidebar.activateTab === "function") {
-            try {
-              if (ui.sidebar.activeTab !== "chat") {
-                ui.sidebar.activateTab("chat");
-              }
-            } catch (_) {}
-          }
-
-          const chatInput = getChatInputElement();
-          if (chatInput) {
-            if (formula) {
-              chatInput.value = `/r ${formula}`;
-            } else if (chatInput.value.startsWith("/r ") || chatInput.value.startsWith("/roll ")) {
-              chatInput.value = "";
-            }
-            // Trigger native & jQuery events to ensure all Foundry/plugin listeners update
-            try {
-              chatInput.dispatchEvent(new Event("input", { bubbles: true }));
-              chatInput.dispatchEvent(new Event("change", { bubbles: true }));
-              chatInput.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
-              if (window.$) {
-                $(chatInput).trigger("input").trigger("change").trigger("keyup");
-              }
-            } catch (_) {}
-          }
-
-          return formula;
+          return parts.length > 0 ? parts.join(" + ") : "";
         }
 
         function renderSideTabs() {
@@ -7268,7 +7223,7 @@ Click a numbered modifier badge to execute a roll.</div>
           rollBtn.on("click", async (e) => {
             e.preventDefault();
             e.stopPropagation();
-            const formula = updateChatFormula();
+            const formula = getFlyoutFormula();
             if (!formula) return;
 
             try {
@@ -7282,7 +7237,6 @@ Click a numbered modifier badge to execute a roll.</div>
 
             // Reset after rolling
             flyoutDiceCounts = { d4: 0, d6: 0, d8: 0, d10: 0, d12: 0, d20: 0, d100: 0 };
-            updateChatFormula();
             renderSideTabs();
           });
           flyoutTray.append(rollBtn);
@@ -7297,7 +7251,6 @@ Click a numbered modifier badge to execute a roll.</div>
             e.preventDefault();
             e.stopPropagation();
             flyoutDiceCounts = { d4: 0, d6: 0, d8: 0, d10: 0, d12: 0, d20: 0, d100: 0 };
-            updateChatFormula();
             renderSideTabs();
           });
           flyoutTray.append(clearBtn);
@@ -7316,7 +7269,6 @@ Click a numbered modifier badge to execute a roll.</div>
             if (flyoutRollMode === "norm") flyoutRollMode = "adv";
             else if (flyoutRollMode === "adv") flyoutRollMode = "dis";
             else flyoutRollMode = "norm";
-            updateChatFormula();
             renderSideTabs();
           });
           flyoutTray.append(modeBtn);
@@ -7347,7 +7299,6 @@ Click a numbered modifier badge to execute a roll.</div>
               e.preventDefault();
               e.stopPropagation();
               flyoutDiceCounts[d.id] = (flyoutDiceCounts[d.id] || 0) + 1;
-              updateChatFormula();
               renderSideTabs();
             });
 
@@ -7357,7 +7308,6 @@ Click a numbered modifier badge to execute a roll.</div>
               e.stopPropagation();
               if ((flyoutDiceCounts[d.id] || 0) > 0) {
                 flyoutDiceCounts[d.id] -= 1;
-                updateChatFormula();
                 renderSideTabs();
               }
             });
