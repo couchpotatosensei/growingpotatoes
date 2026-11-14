@@ -7120,8 +7120,14 @@ Click a numbered modifier badge to execute a roll.</div>
         let flyoutRollMode = "norm"; // "norm" | "adv" | "dis"
         let isDiceFlyoutOpen = false;
 
+        function getChatInputElement() {
+          return document.querySelector("#chat-message") 
+              || (ui.chat?.element ? ui.chat.element.find("#chat-message")[0] : null)
+              || document.querySelector("textarea[name='message']");
+        }
+
         function updateChatFormula() {
-          const chatInput = document.querySelector("#chat-message");
+          const chatInput = getChatInputElement();
           const parts = [];
 
           const diceOrder = ["d4", "d6", "d8", "d10", "d12", "d20", "d100"];
@@ -7143,8 +7149,10 @@ Click a numbered modifier badge to execute a roll.</div>
           }
 
           if (parts.length === 0) {
-            if (chatInput && chatInput.value.startsWith("/r ")) {
+            if (chatInput && (chatInput.value.startsWith("/r ") || chatInput.value.startsWith("/roll "))) {
               chatInput.value = "";
+              chatInput.dispatchEvent(new Event("input", { bubbles: true }));
+              chatInput.dispatchEvent(new Event("change", { bubbles: true }));
             }
             return "";
           }
@@ -7152,6 +7160,8 @@ Click a numbered modifier badge to execute a roll.</div>
           const formula = parts.join(" + ");
           if (chatInput) {
             chatInput.value = `/r ${formula}`;
+            chatInput.dispatchEvent(new Event("input", { bubbles: true }));
+            chatInput.dispatchEvent(new Event("change", { bubbles: true }));
           }
           return formula;
         }
@@ -7177,7 +7187,7 @@ Click a numbered modifier badge to execute a roll.</div>
           // 1. Dice Tray Trigger Tab (Placed above Slot 1)
           const diceTabBtn = $(`
             <button type="button" class="dice-stuff-side-tab-btn ${isDiceFlyoutOpen ? 'tab-assigned' : ''}" id="dice-stuff-flyout-trigger" title="Quick Dice Tray" style="margin-bottom: 2px; ${isDiceFlyoutOpen ? 'border-color: #2563eb; color: #2563eb;' : ''}">
-              <i class="fas fa-dice"></i>
+              <i class="fas fa-dice-d20"></i>
             </button>
           `);
 
@@ -7228,85 +7238,7 @@ Click a numbered modifier badge to execute a roll.</div>
           }
           flyoutTray.empty();
 
-          // Mode Toggle Button: NORM -> ADV -> DIS -> NORM
-          const modeLabels = { norm: "NORM", adv: "ADV", dis: "DIS" };
-          const modeClasses = { norm: "", adv: "mode-adv", dis: "mode-dis" };
-          const modeBtn = $(`
-            <button type="button" class="dice-stuff-flyout-mode-btn ${modeClasses[flyoutRollMode]}" title="Click to cycle Advantage / Disadvantage / Normal">
-              ${modeLabels[flyoutRollMode]}
-            </button>
-          `);
-          modeBtn.on("click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (flyoutRollMode === "norm") flyoutRollMode = "adv";
-            else if (flyoutRollMode === "adv") flyoutRollMode = "dis";
-            else flyoutRollMode = "norm";
-            updateChatFormula();
-            renderSideTabs();
-          });
-          flyoutTray.append(modeBtn);
-
-          // Dice Buttons (Vertical Stack)
-          const diceDefs = [
-            { id: "d4", label: "d4" },
-            { id: "d6", label: "d6" },
-            { id: "d8", label: "d8" },
-            { id: "d10", label: "d10" },
-            { id: "d12", label: "d12" },
-            { id: "d20", label: "d20" },
-            { id: "d100", label: "d100" }
-          ];
-
-          for (const d of diceDefs) {
-            const count = flyoutDiceCounts[d.id] || 0;
-            const badgeHtml = count > 0 ? `<span class="dice-stuff-flyout-badge">${count}</span>` : "";
-            const dieBtn = $(`
-              <button type="button" class="dice-stuff-flyout-die-btn" data-die="${d.id}" title="Left-click: +1 ${d.label} | Right-click: -1">
-                ${d.label}
-                ${badgeHtml}
-              </button>
-            `);
-
-            // Left-Click: Increment
-            dieBtn.on("click", (e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              flyoutDiceCounts[d.id] = (flyoutDiceCounts[d.id] || 0) + 1;
-              updateChatFormula();
-              renderSideTabs();
-            });
-
-            // Right-Click: Decrement
-            dieBtn.on("contextmenu", (e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if ((flyoutDiceCounts[d.id] || 0) > 0) {
-                flyoutDiceCounts[d.id] -= 1;
-                updateChatFormula();
-                renderSideTabs();
-              }
-            });
-
-            flyoutTray.append(dieBtn);
-          }
-
-          // Clear Button
-          const clearBtn = $(`
-            <button type="button" class="dice-stuff-flyout-clear-btn" title="Reset all dice counts">
-              Clear
-            </button>
-          `);
-          clearBtn.on("click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            flyoutDiceCounts = { d4: 0, d6: 0, d8: 0, d10: 0, d12: 0, d20: 0, d100: 0 };
-            updateChatFormula();
-            renderSideTabs();
-          });
-          flyoutTray.append(clearBtn);
-
-          // Roll Button
+          // 1) Roll Button (At the very top)
           const rollBtn = $(`
             <button type="button" class="dice-stuff-flyout-roll-btn" title="Roll formula to chat">
               Roll
@@ -7333,6 +7265,84 @@ Click a numbered modifier badge to execute a roll.</div>
             renderSideTabs();
           });
           flyoutTray.append(rollBtn);
+
+          // 2) Clear Button
+          const clearBtn = $(`
+            <button type="button" class="dice-stuff-flyout-clear-btn" title="Reset all dice counts">
+              Clear
+            </button>
+          `);
+          clearBtn.on("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            flyoutDiceCounts = { d4: 0, d6: 0, d8: 0, d10: 0, d12: 0, d20: 0, d100: 0 };
+            updateChatFormula();
+            renderSideTabs();
+          });
+          flyoutTray.append(clearBtn);
+
+          // 3) Mode Toggle Button: NORM -> ADV -> DIS -> NORM
+          const modeLabels = { norm: "NORM", adv: "ADV", dis: "DIS" };
+          const modeClasses = { norm: "", adv: "mode-adv", dis: "mode-dis" };
+          const modeBtn = $(`
+            <button type="button" class="dice-stuff-flyout-mode-btn ${modeClasses[flyoutRollMode]}" title="Click to cycle Advantage / Disadvantage / Normal">
+              ${modeLabels[flyoutRollMode]}
+            </button>
+          `);
+          modeBtn.on("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (flyoutRollMode === "norm") flyoutRollMode = "adv";
+            else if (flyoutRollMode === "adv") flyoutRollMode = "dis";
+            else flyoutRollMode = "norm";
+            updateChatFormula();
+            renderSideTabs();
+          });
+          flyoutTray.append(modeBtn);
+
+          // 4) Dice Buttons (Vertical Stack with Dice Icons)
+          const diceDefs = [
+            { id: "d4", label: "d4", icon: "fas fa-dice-d4" },
+            { id: "d6", label: "d6", icon: "fas fa-dice-d6" },
+            { id: "d8", label: "d8", icon: "fas fa-dice-d8" },
+            { id: "d10", label: "d10", icon: "fas fa-dice-d10" },
+            { id: "d12", label: "d12", icon: "fas fa-dice-d12" },
+            { id: "d20", label: "d20", icon: "fas fa-dice-d20" },
+            { id: "d100", label: "d100", icon: "fas fa-dice-d10" }
+          ];
+
+          for (const d of diceDefs) {
+            const count = flyoutDiceCounts[d.id] || 0;
+            const badgeHtml = count > 0 ? `<span class="dice-stuff-flyout-badge">${count}</span>` : "";
+            const dieBtn = $(`
+              <button type="button" class="dice-stuff-flyout-die-btn" data-die="${d.id}" title="Left-click: +1 ${d.label} | Right-click: -1">
+                <i class="${d.icon}" style="font-size: 0.95em; margin-right: 2px;"></i><span style="font-size: 0.85em;">${d.label}</span>
+                ${badgeHtml}
+              </button>
+            `);
+
+            // Left-Click: Increment
+            dieBtn.on("click", (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              flyoutDiceCounts[d.id] = (flyoutDiceCounts[d.id] || 0) + 1;
+              updateChatFormula();
+              renderSideTabs();
+            });
+
+            // Right-Click: Decrement
+            dieBtn.on("contextmenu", (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if ((flyoutDiceCounts[d.id] || 0) > 0) {
+                flyoutDiceCounts[d.id] -= 1;
+                updateChatFormula();
+                renderSideTabs();
+              }
+            });
+
+            flyoutTray.append(dieBtn);
+          }
         }
 
         renderSideTabs();
