@@ -35,8 +35,13 @@ export const SETTINGS = Object.freeze({
     APPLY_CUSTOM_KEYBINDINGS: "applyCustomKeybindings",
     CHAT_CONTROLS: "featureChatControls",
     DICE_TRAY: "featureDiceTrayCopycat",
-    DDB_LISTENER: "featureDdbListener"
+    DDB_LISTENER: "featureDdbListener",
+    SMARTPHONE_WIDGET: "featureSmartphoneWidget"
   }),
+  SMARTPHONE_THEME: "smartphoneTheme",
+  SMARTPHONE_HIDE_SIDEBAR: "smartphoneHideSidebar",
+  SMARTPHONE_PLAYER_SHOW_SIDEBAR: "smartphonePlayerShowSidebar",
+  SMARTPHONE_DISABLED_APPS: "smartphoneDisabledApps",
   DDB_CAMPAIGN_ID: "ddbCampaignId",
   DDB_USER_ID: "ddbUserId",
   DDB_COBALT_TOKEN: "ddbCobaltToken",

@@ -9752,11 +9752,50 @@ Click a numbered modifier badge to execute a roll.</div>
 
         renderSideTabs();
 
+        const persistDiceStuffPos = () => {
+          try {
+            const el = dialogApp[0];
+            const left = Number.isFinite(el?.offsetLeft) ? el.offsetLeft : dlg?.position?.left;
+            const top = Number.isFinite(el?.offsetTop) ? el.offsetTop : dlg?.position?.top;
+            if (Number.isFinite(left) && Number.isFinite(top)) {
+              const pos = { left: Math.round(left), top: Math.round(top) };
+              localStorage.setItem("cd.diceStuff.position", JSON.stringify(pos));
+              game?.user?.setFlag?.(MODULE_ID, "diceStuffPosition", pos).catch(() => {});
+            }
+          } catch { /* ignore storage errors */ }
+        };
+
+        dialogApp.find(".window-header").off("mouseup.cdSavePos pointerup.cdSavePos").on("mouseup.cdSavePos pointerup.cdSavePos", () => {
+          setTimeout(persistDiceStuffPos, 0);
+        });
+
+        const savedPos = (() => {
+          if (dialogOptions?.top !== undefined || dialogOptions?.left !== undefined) return null;
+          try {
+            const flagPos = game?.user?.getFlag?.(MODULE_ID, "diceStuffPosition") ?? game?.user?.flags?.[MODULE_ID]?.diceStuffPosition;
+            const raw = !flagPos ? localStorage.getItem("cd.diceStuff.position") : null;
+            const parsed = flagPos || (raw ? JSON.parse(raw) : null);
+            if (Number.isFinite(parsed?.left) && Number.isFinite(parsed?.top)) {
+              const maxL = Math.max(20, window.innerWidth - 120);
+              const maxT = Math.max(20, window.innerHeight - 80);
+              return {
+                left: Math.min(Math.max(20, parsed.left), maxL),
+                top: Math.min(Math.max(20, parsed.top), maxT)
+              };
+            }
+          } catch { /* ignore storage errors */ }
+          return null;
+        })();
+
         if (!dlg._gpCenteredOnce && dialogOptions?.top === undefined && dialogOptions?.left === undefined) {
           dlg._gpCenteredOnce = true;
           requestAnimationFrame(() => {
             const el = dialogApp[0];
             if (!el || dlg._minimized) return;
+            if (savedPos) {
+              dlg.setPosition({ left: savedPos.left, top: savedPos.top });
+              return;
+            }
             const w = el.offsetWidth || (isInitiallyCompact ? 340 : 1060);
             const h = el.offsetHeight || 520;
             const left = Math.max(20, Math.round((window.innerWidth - w) / 2));
@@ -9772,6 +9811,16 @@ Click a numbered modifier badge to execute a roll.</div>
       ...(dialogOptions?.top !== undefined ? { top: dialogOptions.top } : {}),
       ...(dialogOptions?.left !== undefined ? { left: dialogOptions.left } : {}),
       close: (html) => {
+        try {
+          const el = html?.closest?.(".dialog")?.[0];
+          const left = Number.isFinite(el?.offsetLeft) ? el.offsetLeft : dlg?.position?.left;
+          const top = Number.isFinite(el?.offsetTop) ? el.offsetTop : dlg?.position?.top;
+          if (Number.isFinite(left) && Number.isFinite(top)) {
+            const pos = { left: Math.round(left), top: Math.round(top) };
+            localStorage.setItem("cd.diceStuff.position", JSON.stringify(pos));
+            game?.user?.setFlag?.(MODULE_ID, "diceStuffPosition", pos).catch(() => {});
+          }
+        } catch { /* ignore storage errors */ }
         if (typeof onResetHook === "number") Hooks.off("gpDiceResetAll", onResetHook);
         if (typeof onSyncHook === "number") Hooks.off("gpDiceFormulaSync", onSyncHook);
         if (typeof dialogOptions?.close === "function") dialogOptions.close(html);

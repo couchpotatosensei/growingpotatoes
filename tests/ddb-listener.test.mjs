@@ -21,8 +21,14 @@ import {
   computeDdbHpUpdates,
   DdbGameLogClient,
   parseDdbCampaignIds,
-  DdbMultiCampaignManager
+  DdbMultiCampaignManager,
+  isBeyond20ChatMessage,
+  parseBeyond20ChatMessage,
+  getDdbDiagnosticsStats,
+  getRecentDdbRolls,
+  resetDdbDiagnostics
 } from "../modules/ddb-listener.js";
+import { registerSocketHandlers } from "../modules/socket-handlers.js";
 
 describe("D&D Beyond Game Log Listener", () => {
   it("parseDdbGameLogEvent parses advantage attack rolls and marks dropped dice", () => {
@@ -349,6 +355,7 @@ describe("D&D Beyond Game Log Listener", () => {
       user: { id: "gm-user" },
       actors: []
     };
+    globalThis.CONST = { TOKEN_DISPOSITIONS: { HOSTILE: -1, NEUTRAL: 0, FRIENDLY: 1, SECRET: -2 } };
     globalThis.CONFIG = { sounds: { dice: "dice.wav" } };
 
     // 1. Advantage Attack Roll (rolled 11 and 18, kept 18, mod +7)
@@ -594,6 +601,7 @@ describe("D&D Beyond Game Log Listener", () => {
       },
       getSpeaker: () => ({ alias: "Fighter" })
     };
+    globalThis.CONST = { TOKEN_DISPOSITIONS: { HOSTILE: -1, NEUTRAL: 0, FRIENDLY: 1, SECRET: -2 } };
     globalThis.CONFIG = { sounds: { dice: "dice.wav" } };
 
     const matchingWeapon = {
@@ -727,6 +735,7 @@ describe("D&D Beyond Game Log Listener", () => {
       },
       getSpeaker: () => ({ alias: "Jack" })
     };
+    globalThis.CONST = { TOKEN_DISPOSITIONS: { HOSTILE: -1, NEUTRAL: 0, FRIENDLY: 1, SECRET: -2 } };
     globalThis.CONFIG = { sounds: { dice: "dice.wav" } };
 
     const importedActor = {
@@ -1718,5 +1727,1347 @@ describe("D&D Beyond Game Log Listener", () => {
     assert.deepEqual(manager.getConnectedCampaignIds(), []);
     assert.equal(created[1].disconnected, true);
     assert.equal(created[2].disconnected, true);
+  });
+
+  it("isBeyond20ChatMessage detects Beyond20 flags/HTML and ignores Cheap Dice cards", () => {
+    assert.equal(isBeyond20ChatMessage({ flags: { beyond20: { type: "attack" } }, content: "" }), true);
+    assert.equal(isBeyond20ChatMessage({ content: '<div class="beyond20-message">Roll</div>' }), true);
+    assert.equal(isBeyond20ChatMessage({ content: '<div class="cd-chat-card beyond20-ref">Roll</div>' }), false);
+    assert.equal(isBeyond20ChatMessage({ content: "<div>Just normal chat</div>" }), false);
+  });
+
+  it("parseBeyond20ChatMessage parses Foundry Roll objects for attack + damage", () => {
+    const msg = {
+      id: "b20-msg-1",
+      speaker: { alias: "Aragorn" },
+      flags: { beyond20: { title: "Longsword", advantage: 1, characterId: "998877" } },
+      content: '<div class="beyond20-message"><div class="beyond20-header">Longsword</div></div>',
+      rolls: [
+        {
+          formula: "2d20kh1 + 7",
+          total: 25,
+          terms: [{ faces: 20, results: [{ result: 18, active: true }, { result: 9, active: false, discarded: true }] }]
+        },
+        {
+          formula: "1d8 + 4",
+          total: 10,
+          terms: [{ faces: 8, results: [{ result: 6, active: true }] }]
+        }
+      ]
+    };
+
+    const parsed = parseBeyond20ChatMessage(msg);
+    assert.equal(parsed.length, 2);
+    assert.equal(parsed[0].characterName, "Aragorn");
+    assert.equal(parsed[0].ddbCharacterId, "998877");
+    assert.equal(parsed[0].actionName, "Longsword");
+    assert.equal(parsed[0].rollType, "attack");
+    assert.equal(parsed[0].rollMode, "advantage");
+    assert.equal(parsed[0].keptD20, 18);
+    assert.deepEqual(parsed[0].d20Values, [18, 9]);
+    assert.equal(parsed[0].modifier, 7);
+    assert.equal(parsed[0].total, 25);
+
+    assert.equal(parsed[1].rollType, "damage");
+    assert.equal(parsed[1].modifier, 4);
+    assert.equal(parsed[1].total, 10);
+  });
+
+  it("parseBeyond20ChatMessage parses HTML-only Beyond20 cards, paired advantage, skills, saves, and ignores description-only cards", () => {
+    const htmlPairedAdv = {
+      id: "b20-html-1",
+      speaker: { alias: "Lyra" },
+      content: `
+        <div class="beyond20-message">
+          <div class="beyond20-header">Stealth (Advantage)</div>
+          <div class="beyond20-roll-cells">
+            <div class="dice-roll"><div class="dice-result"><div class="dice-formula">1d20 + 6</div><ol class="dice-rolls"><li class="roll die d20">11</li></ol><h4 class="dice-total">17</h4></div></div>
+            <div class="dice-roll"><div class="dice-result"><div class="dice-formula">1d20 + 6</div><ol class="dice-rolls"><li class="roll die d20">19</li></ol><h4 class="dice-total">25</h4></div></div>
+          </div>
+        </div>
+      `
+    };
+    const skillParsed = parseBeyond20ChatMessage(htmlPairedAdv);
+    assert.equal(skillParsed.length, 1);
+    assert.equal(skillParsed[0].actionName, "Stealth");
+    assert.equal(skillParsed[0].rollType, "skill");
+    assert.equal(skillParsed[0].rollMode, "advantage");
+    assert.equal(skillParsed[0].keptD20, 19);
+    assert.deepEqual(skillParsed[0].d20Values, [11, 19]);
+    assert.equal(skillParsed[0].modifier, 6);
+    assert.equal(skillParsed[0].total, 25);
+
+    const htmlSave = {
+      id: "b20-html-2",
+      speaker: { alias: "Lyra" },
+      content: `
+        <div class="beyond20-message">
+          <div class="beyond20-header">Dexterity Saving Throw</div>
+          <div class="dice-roll"><div class="dice-result"><div class="dice-formula">1d20 + 4</div><ol class="dice-rolls"><li class="roll die d20">15</li></ol><h4 class="dice-total">19</h4></div></div>
+        </div>
+      `
+    };
+    const saveParsed = parseBeyond20ChatMessage(htmlSave);
+    assert.equal(saveParsed.length, 1);
+    assert.equal(saveParsed[0].rollType, "save");
+    assert.equal(saveParsed[0].keptD20, 15);
+    assert.equal(saveParsed[0].total, 19);
+
+    const descOnly = {
+      id: "b20-desc",
+      flags: { beyond20: {} },
+      content: '<div class="beyond20-message"><div class="beyond20-header">Second Wind</div><p>You have a limited well of stamina.</p></div>'
+    };
+    assert.deepEqual(parseBeyond20ChatMessage(descOnly), []);
+  });
+
+  it("parseDdbGameLogEvent parses Beyond20 custom/beyond20/roll WebSocket events", () => {
+    const b20WsEvent = {
+      id: "124c761e-e6a9-41e2-8c95-259ff1fa97c4",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityType: "character",
+      entityId: "123045754",
+      data: {
+        request: {
+          action: "roll",
+          character: { name: "Vos'langi", id: "123045754" },
+          type: "ability",
+          roll: "1d20-1",
+          advantage: 1,
+          name: "Strength",
+          ability: "STR",
+          modifier: "-1"
+        },
+        render: `<div class="beyond20-message"><div class="beyond20-header"><span class='beyond20-title'>Strength (-1)</span></div><div class='beyond20-roll-result beyond20-roll-cells'><div class="beyond20-roll-cell"><span class='beyond20-tooltip'><span class='beyond20-roll-value beyond20-roll-detail-normal'>1</span><span class='dice-roll beyond20-tooltip-content'><div class='dice-formula beyond20-roll-formula'>1d20 - 1</div><div class='beyond20-roll-tooltip'><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><div class='beyond20-roll-dice-rolls'><span class='beyond20-roll-die-result beyond20-roll-detail-normal'>2</span></div></div></div></span></span></div><div class="beyond20-roll-cell"><span class='beyond20-tooltip'><span class='beyond20-roll-value beyond20-roll-detail-normal'>14</span><span class='dice-roll beyond20-tooltip-content'><div class='dice-formula beyond20-roll-formula'>1d20 - 1</div><div class='beyond20-roll-tooltip'><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><div class='beyond20-roll-dice-rolls'><span class='beyond20-roll-die-result beyond20-roll-detail-normal'>15</span></div></div></div></span></span></div></div></div>`
+      }
+    };
+
+    const parsed = parseDdbGameLogEvent(b20WsEvent);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].characterName, "Vos'langi");
+    assert.equal(parsed[0].ddbCharacterId, "123045754");
+    assert.equal(parsed[0].actionName, "Strength");
+    assert.equal(parsed[0].rollType, "check");
+    assert.equal(parsed[0].rollMode, "normal");
+    assert.equal(parsed[0].keptD20, 2);
+    assert.deepEqual(parsed[0].d20Values, [2, 15]);
+    assert.equal(parsed[0].modifier, -1);
+    assert.equal(parsed[0].total, 1);
+  });
+
+  it("parseDdbGameLogEvent and postDdbRollToFoundry enforce exact d20 and damage dice faces from Beyond20 attack+damage packets", async () => {
+    const b20AtkDmgEvent = {
+      id: "b20-atk-dmg-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: {
+        request: {
+          action: "roll",
+          character: { name: "Vos'langi", id: "123045754" },
+          type: "attack",
+          roll: "1d20+7",
+          advantage: 1,
+          name: "Dagger",
+          modifier: "7"
+        },
+        render: `
+          <div class="beyond20-message">
+            <div class="beyond20-header"><span class='beyond20-title'>Dagger</span></div>
+            <div class='beyond20-roll-result beyond20-roll-cells'>
+              <div class="beyond20-roll-cell"><span class='beyond20-tooltip'><span class='beyond20-roll-value beyond20-roll-detail-normal'>19</span><span class='dice-roll beyond20-tooltip-content'><div class='dice-formula beyond20-roll-formula'>1d20 + 7</div><div class='beyond20-roll-tooltip'><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><div class='beyond20-roll-dice-rolls'><span class='beyond20-roll-die-result beyond20-roll-detail-normal'>12</span></div></div></div></span></span></div>
+              <div class="beyond20-roll-cell"><span class='beyond20-tooltip'><span class='beyond20-roll-value beyond20-roll-detail-normal'>24</span><span class='dice-roll beyond20-tooltip-content'><div class='dice-formula beyond20-roll-formula'>1d20 + 7</div><div class='beyond20-roll-tooltip'><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><div class='beyond20-roll-dice-rolls'><span class='beyond20-roll-die-result beyond20-roll-detail-normal'>17</span></div></div></div></span></span></div>
+              <div class="beyond20-roll-cell"><span class='beyond20-tooltip'><span class='beyond20-roll-value beyond20-roll-detail-normal'>8</span><span class='dice-roll beyond20-tooltip-content'><div class='dice-formula beyond20-roll-formula'>1d4 + 5</div><div class='beyond20-roll-tooltip'><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d4</div><div class='beyond20-roll-dice-rolls'><span class='beyond20-roll-die-result beyond20-roll-detail-normal'>3</span></div></div></div></span></span></div>
+            </div>
+          </div>
+        `
+      }
+    };
+
+    const parsed = parseDdbGameLogEvent(b20AtkDmgEvent);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].rollType, "attack");
+    assert.deepEqual(parsed[0].d20Values, [12, 17]);
+    assert.equal(parsed[0].keptD20, 12);
+    assert.ok(parsed[0].pairedDamage, "Paired damage must be attached to the attack roll");
+    assert.equal(parsed[0].pairedDamage.total, 8);
+    assert.deepEqual(parsed[0].pairedDamage.dice, [{ dieType: "d4", dieValue: 3, dropped: false }]);
+
+    let executedCall = null;
+    globalThis.attackSocket = {
+      executeAsGM: async (handler, config, actorId, userId) => {
+        executedCall = { handler, config, actorId, userId };
+      }
+    };
+    const mockActor = {
+      id: "vos-1",
+      name: "Vos'langi",
+      items: [],
+      testUserPermission: () => true,
+      getFlag: (scope, key) => key === "attackConfigs" ? {
+        Dagger: { chatCardTitle: "Dagger", abilityScore: "dex", damageDieSize: "d4", damageDiceCount: 1 }
+      } : null
+    };
+    globalThis.game = {
+      actors: [mockActor],
+      user: { id: "gm-1", isGM: true },
+      users: { find: () => null },
+      settings: { get: () => false }
+    };
+    globalThis.window = {};
+
+    const res = await postDdbRollToFoundry(parsed[0]);
+    assert.ok(res?.hijacked);
+    assert.equal(executedCall.config.injectedD20_1, 12);
+    assert.equal(executedCall.config.injectedD20_2, 17);
+    assert.equal(executedCall.config.injectedDamageTotal, 8);
+    assert.deepEqual(executedCall.config.injectedDamageDice, [{ dieType: "d4", dieValue: 3, dropped: false }]);
+
+    delete globalThis.attackSocket;
+    delete globalThis.game;
+    delete globalThis.window;
+  });
+
+  it("DdbGameLogClient deduplicates native DDB dice/roll/fulfilled and Beyond20 custom/beyond20/roll for the same roll", () => {
+    const emitted = [];
+    const client = new DdbGameLogClient({
+      onRoll: (roll) => emitted.push(roll)
+    });
+
+    const nativeDdbEvent = {
+      id: "ddb-native-1",
+      eventType: "dice/roll/fulfilled",
+      entityId: "123045754",
+      context: { name: "Vos'langi" },
+      data: {
+        action: "Strength",
+        rolls: [{
+          rollType: "check",
+          rollKind: "none",
+          diceNotation: { set: [{ count: 1, dieType: "d20", dice: [{ dieType: "d20", dieValue: 11 }] }], constant: -1 },
+          result: { constant: -1, values: [11], total: 10, text: "11 - 1" }
+        }]
+      }
+    };
+
+    const beyond20EchoEvent = {
+      id: "b20-echo-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: {
+        request: {
+          character: { name: "Vos'langi", id: "123045754" },
+          type: "ability",
+          roll: "1d20-1",
+          advantage: 1,
+          name: "Strength",
+          modifier: "-1"
+        },
+        render: `<div class="beyond20-message"><div class='beyond20-roll-cell'><span class='beyond20-roll-value'>10</span><div class='beyond20-roll-formula'>1d20 - 1</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><span class='beyond20-roll-die-result'>11</span></div></div></div>`
+      }
+    };
+
+    client.handleRawMessage(nativeDdbEvent);
+    client.handleRawMessage(beyond20EchoEvent);
+    assert.equal(emitted.length, 1, "Cross-source duplicate from Beyond20 must be suppressed when DDB Digital Dice is on");
+
+    // A second distinct roll from the same native source with different id and total must still emit
+    const secondNativeRoll = {
+      ...nativeDdbEvent,
+      id: "ddb-native-2",
+      data: {
+        ...nativeDdbEvent.data,
+        rolls: [{
+          rollType: "check",
+          rollKind: "none",
+          diceNotation: { set: [{ count: 1, dieType: "d20", dice: [{ dieType: "d20", dieValue: 18 }] }], constant: -1 },
+          result: { constant: -1, values: [18], total: 17, text: "18 - 1" }
+        }]
+      }
+    };
+    client.handleRawMessage(secondNativeRoll);
+    assert.equal(emitted.length, 2, "Distinct second roll from same source must not be suppressed");
+  });
+
+  it("parseBeyond20ChatMessage parses .beyond20-roll-cell HTML and JSON-stringified data.rolls", () => {
+    const cellHtmlMsg = {
+      id: "b20-cell-msg-1",
+      speaker: { alias: "Vos'langi" },
+      flags: { beyond20: { title: "Perception", characterId: "123045754" } },
+      content: `
+        <div class="beyond20-message">
+          <div class="beyond20-header"><span class="beyond20-title">Perception</span></div>
+          <div class="beyond20-roll-result beyond20-roll-cells">
+            <div class="beyond20-roll-cell">
+              <span class="beyond20-tooltip">
+                <span class="beyond20-roll-value beyond20-roll-detail-normal">18</span>
+                <span class="dice-roll beyond20-tooltip-content">
+                  <div class="dice-formula beyond20-roll-formula">1d20 + 5</div>
+                  <div class="beyond20-roll-tooltip">
+                    <div class="beyond20-roll-dice">
+                      <div class="beyond20-roll-dice-formula">1d20</div>
+                      <div class="beyond20-roll-dice-rolls"><span class="beyond20-roll-die-result beyond20-roll-detail-normal">13</span></div>
+                    </div>
+                  </div>
+                </span>
+              </span>
+            </div>
+          </div>
+        </div>
+      `,
+      rolls: []
+    };
+    const cellParsed = parseBeyond20ChatMessage(cellHtmlMsg);
+    assert.equal(cellParsed.length, 1);
+    assert.equal(cellParsed[0].actionName, "Perception");
+    assert.equal(cellParsed[0].rollType, "skill");
+    assert.equal(cellParsed[0].keptD20, 13);
+    assert.equal(cellParsed[0].modifier, 5);
+    assert.equal(cellParsed[0].total, 18);
+
+    const stringifiedRollsMsg = {
+      id: "b20-str-roll-1",
+      speaker: { alias: "Aragorn" },
+      flags: { beyond20: { title: "Longsword", characterId: "998877" } },
+      content: '<div class="beyond20-message"><div class="beyond20-header">Longsword</div></div>',
+      rolls: [
+        JSON.stringify({
+          formula: "1d20 + 7",
+          total: 22,
+          terms: [{ faces: 20, results: [{ result: 15, active: true }] }]
+        })
+      ]
+    };
+    const strParsed = parseBeyond20ChatMessage(stringifiedRollsMsg);
+    assert.equal(strParsed.length, 1);
+    assert.equal(strParsed[0].keptD20, 15);
+    assert.equal(strParsed[0].total, 22);
+  });
+
+  it("parseDdbGameLogEvent handles stringified data in custom/beyond20/roll", () => {
+    const evt = {
+      id: "b20-ws-str-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: JSON.stringify({
+        request: {
+          character: { name: "Vos'langi", id: "123045754" },
+          type: "skill",
+          name: "Stealth",
+          modifier: "4"
+        },
+        render: `<div class="beyond20-message"><div class="beyond20-roll-cell"><span class="beyond20-roll-value">19</span><div class="beyond20-roll-formula">1d20 + 4</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d20</div><span class="beyond20-roll-die-result">15</span></div></div></div>`
+      })
+    };
+    const parsed = parseDdbGameLogEvent(evt);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].actionName, "Stealth");
+    assert.equal(parsed[0].rollType, "skill");
+    assert.equal(parsed[0].keptD20, 15);
+    assert.equal(parsed[0].total, 19);
+  });
+
+  it("DdbGameLogClient deduplicates cross-source rolls when Beyond20 omits ddbCharacterId and appends action suffixes", () => {
+    const emitted = [];
+    const client = new DdbGameLogClient({
+      onRoll: (roll) => emitted.push(roll)
+    });
+
+    const nativeDdbEvent = {
+      id: "ddb-ls-1",
+      eventType: "dice/roll/fulfilled",
+      entityId: "123045754",
+      context: { name: "Vos'langi" },
+      data: {
+        action: "Longsword",
+        rolls: [{
+          rollType: "attack",
+          rollKind: "none",
+          diceNotation: { set: [{ count: 1, dieType: "d20", dice: [{ dieType: "d20", dieValue: 14 }] }], constant: 5 },
+          result: { constant: 5, values: [14], total: 19, text: "14 + 5" }
+        }]
+      }
+    };
+
+    const beyond20EchoNoId = {
+      id: "b20-ls-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      data: {
+        request: {
+          character: { name: "Vos'langi" },
+          type: "attack",
+          roll: "1d20+5",
+          advantage: 1,
+          name: "Longsword (Melee Weapon Attack)",
+          modifier: "5"
+        },
+        render: `<div class="beyond20-message"><div class='beyond20-roll-cell'><span class='beyond20-roll-value'>19</span><div class='beyond20-roll-formula'>1d20 + 5</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><span class='beyond20-roll-die-result'>14</span></div></div></div>`
+      }
+    };
+
+    client.handleRawMessage(nativeDdbEvent);
+    client.handleRawMessage(beyond20EchoNoId);
+    assert.equal(emitted.length, 1, "Beyond20 echo without entityId and with (Melee Weapon Attack) suffix must be suppressed");
+  });
+
+  it("postDdbRollToFoundry suppresses duplicate cards when game.messages already has a matching recent DDB/Beyond20 card", async () => {
+    let createdCount = 0;
+    const mockActor = {
+      id: "actor-vos-1",
+      name: "Vos'langi",
+      items: [],
+      testUserPermission: () => true,
+      flags: { ddbimporter: { ddbbeyond: { characterId: "123045754" } } }
+    };
+    const fakeMessages = [];
+    globalThis.ChatMessage = {
+      getSpeaker: ({ actor }) => ({ actor: actor?.id, alias: actor?.name }),
+      create: async (payload) => {
+        createdCount += 1;
+        fakeMessages.push({ ...payload, timestamp: Date.now() });
+        return payload;
+      }
+    };
+    globalThis.CONST = { TOKEN_DISPOSITIONS: { HOSTILE: -1, NEUTRAL: 0, FRIENDLY: 1, SECRET: -2 } };
+    globalThis.CONFIG = { sounds: { dice: "dice.wav" } };
+    globalThis.Roll = class FakeRoll {
+      constructor(formula) {
+        this.formula = formula;
+        this.total = 18;
+        this.dice = [{ results: [{ result: 13, active: true }] }];
+        this.terms = [{ faces: 20, results: [{ result: 13, active: true }] }];
+      }
+      async evaluate() { return this; }
+      async render() { return "<div>18</div>"; }
+    };
+    globalThis.game = {
+      actors: [mockActor],
+      user: { id: "player-1", isGM: false },
+      users: { find: () => null, get: () => null },
+      settings: { get: () => false },
+      messages: { contents: fakeMessages }
+    };
+    globalThis.window = {};
+
+    // 1. Player's intercepted Beyond20 roll posts first (no ddbCharacterId)
+    await postDdbRollToFoundry({
+      id: "b20-msg-1",
+      source: "beyond20-chat",
+      characterName: "Vos'langi",
+      ddbCharacterId: "",
+      actionName: "Perception (Check)",
+      rollType: "skill",
+      rollMode: "normal",
+      dice: [{ dieType: "d20", dieValue: 13, dropped: false }],
+      d20Values: [13],
+      keptD20: 13,
+      modifier: 5,
+      total: 18,
+      formula: "1d20 + 5"
+    });
+    assert.equal(createdCount, 1);
+
+    // 2. GM's native DDB WebSocket roll arrives for the same roll (has ddbCharacterId, bare actionName)
+    const secondResult = await postDdbRollToFoundry({
+      id: "ddb-ws-1",
+      source: "ddb",
+      characterName: "Vos'langi",
+      ddbCharacterId: "123045754",
+      actionName: "Perception",
+      rollType: "skill",
+      rollMode: "normal",
+      dice: [{ dieType: "d20", dieValue: 13, dropped: false }],
+      d20Values: [13],
+      keptD20: 13,
+      modifier: 5,
+      total: 18,
+      formula: "1d20 + 5"
+    });
+    assert.equal(secondResult, null);
+    assert.equal(createdCount, 1, "Second card from cross-client DDB WebSocket must be suppressed");
+
+    delete globalThis.ChatMessage;
+    delete globalThis.CONST;
+    delete globalThis.CONFIG;
+    delete globalThis.Roll;
+    delete globalThis.game;
+    delete globalThis.window;
+  });
+
+  it("parseDdbGameLogEvent ignores dice/roll/deferred and dice/roll/pending events", () => {
+    const deferredEvt = {
+      id: "deferred-1",
+      source: "Web",
+      eventType: "dice/roll/deferred",
+      entityId: "123045754",
+      data: {
+        action: "custom",
+        context: { name: "Vos'langi", entityId: "123045754" },
+        rolls: [{
+          rollType: "roll",
+          diceNotation: { set: [{ count: 2, dieType: "d20", dice: [{ dieType: "d20", dieValue: 18 }, { dieType: "d20", dieValue: 9 }] }], constant: 0 },
+          result: { constant: 0, values: [18, 9], total: 27, text: "18+9" }
+        }]
+      }
+    };
+    assert.deepEqual(parseDdbGameLogEvent(deferredEvt), []);
+    assert.deepEqual(parseDdbGameLogEvent({ ...deferredEvt, eventType: "dice/roll/pending" }), []);
+  });
+
+  it("normalizeDdbRollType maps 5e damage types like Piercing and Fire to damage", () => {
+    assert.equal(normalizeDdbRollType("Piercing"), "damage");
+    assert.equal(normalizeDdbRollType("Fire"), "damage");
+    assert.equal(normalizeDdbRollType("Slashing Damage"), "damage");
+    const dmgEvt = {
+      id: "ddb-dmg-piercing-1",
+      eventType: "dice/roll/fulfilled",
+      entityId: "123045754",
+      context: { name: "Vos'langi" },
+      data: {
+        action: "Dagger",
+        rolls: [{
+          rollType: "Piercing",
+          diceNotation: { set: [{ count: 1, dieType: "d4", dice: [{ dieType: "d4", dieValue: 2 }] }], constant: 2 },
+          result: { constant: 2, values: [2], total: 4, text: "2+2" }
+        }]
+      }
+    };
+    const parsed = parseDdbGameLogEvent(dmgEvt);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].rollType, "damage");
+    assert.equal(parsed[0].total, 4);
+  });
+
+  it("parseBeyond20WebSocketEvent classifies non-d20 damage clicks as damage even when req.type is attack", () => {
+    const b20DmgEvt = {
+      id: "b20-dmg-only-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: {
+        request: {
+          action: "roll",
+          character: { name: "Vos'langi", id: "123045754" },
+          type: "attack",
+          roll: "1d20+7",
+          name: "Dagger"
+        },
+        render: `<div class="beyond20-message"><div class="beyond20-roll-cell"><span class="beyond20-roll-value">4</span><div class="beyond20-roll-formula">1d4 + 2</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d4</div><span class="beyond20-roll-die-result">2</span></div></div></div>`
+      }
+    };
+    const parsed = parseDdbGameLogEvent(b20DmgEvt);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].rollType, "damage");
+    assert.equal(parsed[0].total, 4);
+    assert.deepEqual(parsed[0].dice, [{ dieType: "d4", dieValue: 2, dropped: false }]);
+  });
+
+  it("parseDdbGameLogEvent merges Beyond20 __b20Override__ split d20 rolls into one dual-d20 roll and strips (+X) for skill detection", () => {
+    const evt = {
+      id: "b20-override-skill-1",
+      source: "Web",
+      eventType: "dice/roll/fulfilled",
+      entityId: "123045754",
+      data: {
+        action: "Acrobatics (+2)",
+        context: { name: "Vos'langi", entityId: "123045754" },
+        __b20Override__: true,
+        rolls: [
+          {
+            rollType: "check",
+            rollKind: "",
+            diceNotation: { constant: 2, set: [{ count: 1, dieType: "d20", operation: 0, dice: [{ dieType: "d20", dieValue: 3 }] }] },
+            result: { constant: 2, values: [3], total: 5, text: "3+2" }
+          },
+          {
+            rollType: "check",
+            rollKind: "",
+            diceNotation: { constant: 2, set: [{ count: 1, dieType: "d20", operation: 0, dice: [{ dieType: "d20", dieValue: 5 }] }] },
+            result: { constant: 2, values: [5], total: 7, text: "5+2" }
+          }
+        ]
+      }
+    };
+    const parsed = parseDdbGameLogEvent(evt);
+    assert.equal(parsed.length, 1, "Split __b20Override__ d20s must merge into one roll object");
+    assert.equal(parsed[0].rollType, "skill");
+    assert.deepEqual(parsed[0].d20Values, [3, 5]);
+    assert.equal(parsed[0].keptD20, 3);
+    assert.equal(parsed[0].total, 5);
+  });
+
+  it("DdbGameLogClient deduplicates custom/beyond20/roll and dice/roll/fulfilled sharing the same rollId", () => {
+    const emitted = [];
+    const client = new DdbGameLogClient({
+      onRoll: (roll) => emitted.push(roll)
+    });
+
+    const b20WsEvent = {
+      id: "244fd5bd-c488-4143-84e5-9672bd28a6cc",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: {
+        rollId: "a7fab087-bdb1-49ea-9a58-df743e6e54fa",
+        request: {
+          action: "roll",
+          character: { name: "Vos'langi", id: "123045754" },
+          type: "skill",
+          name: "Acrobatics (+2)"
+        },
+        render: `<div class="beyond20-message"><div class="beyond20-roll-cell"><span class="beyond20-roll-value">16</span><div class="beyond20-roll-formula">1d20 + 2</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d20</div><span class="beyond20-roll-die-result">14</span></div></div></div>`
+      }
+    };
+
+    const ddbFulfilledEvent = {
+      id: "23c542fe-5384-4017-ae48-c42dddd4afc4",
+      source: "Web",
+      eventType: "dice/roll/fulfilled",
+      entityId: "123045754",
+      data: {
+        action: "Acrobatics (+2)",
+        context: { name: "Vos'langi", entityId: "123045754" },
+        rollId: "a7fab087-bdb1-49ea-9a58-df743e6e54fa",
+        __b20Override__: true,
+        rolls: [
+          {
+            rollType: "check",
+            rollKind: "",
+            diceNotation: { constant: 2, set: [{ count: 1, dieType: "d20", operation: 0, dice: [{ dieType: "d20", dieValue: 14 }] }] },
+            result: { constant: 2, values: [14], total: 16, text: "14+2" }
+          },
+          {
+            rollType: "check",
+            rollKind: "",
+            diceNotation: { constant: 2, set: [{ count: 1, dieType: "d20", operation: 0, dice: [{ dieType: "d20", dieValue: 16 }] }] },
+            result: { constant: 2, values: [16], total: 18, text: "16+2" }
+          }
+        ]
+      }
+    };
+
+    client.handleRawMessage(b20WsEvent);
+    client.handleRawMessage(ddbFulfilledEvent);
+    assert.equal(emitted.length, 1, "Second WebSocket packet with same rollId must be deduplicated");
+  });
+
+  it("DdbGameLogClient drops generic Beyond20 'Roll' when paired DDB dice/roll/fulfilled arrives for same character and total", async () => {
+    const emitted = [];
+    const client = new DdbGameLogClient({
+      onRoll: (roll) => emitted.push(roll)
+    });
+
+    const genericB20Event = {
+      id: "8d232e08-88be-4f5e-9a90-251f163c2ca5",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "999888777",
+      data: {
+        request: {
+          action: "roll",
+          character: { name: "TestRogue", id: "999888777" }
+        },
+        render: `<div class="beyond20-message"><div class="beyond20-roll-cell"><span class="beyond20-roll-value">12</span><div class="beyond20-roll-formula">1d20 + 2</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d20</div><span class="beyond20-roll-die-result">10</span></div></div></div>`
+      }
+    };
+
+    const ddbFulfilledEvent = {
+      id: "acad8489-77ff-4f27-9491-cde24208ece5",
+      source: "Web",
+      eventType: "dice/roll/fulfilled",
+      entityId: "999888777",
+      data: {
+        action: "Acrobatics (+2)",
+        context: { name: "TestRogue", entityId: "999888777" },
+        rollId: "36296437-ff4a-4f26-8f32-a1bdc6886de0",
+        __b20Override__: true,
+        rolls: [
+          {
+            rollType: "check",
+            rollKind: "",
+            diceNotation: { constant: 2, set: [{ count: 1, dieType: "d20", operation: 0, dice: [{ dieType: "d20", dieValue: 10 }] }] },
+            result: { constant: 2, values: [10], total: 12, text: "10+2" }
+          },
+          {
+            rollType: "check",
+            rollKind: "",
+            diceNotation: { constant: 2, set: [{ count: 1, dieType: "d20", operation: 0, dice: [{ dieType: "d20", dieValue: 9 }] }] },
+            result: { constant: 2, values: [9], total: 11, text: "9+2" }
+          }
+        ]
+      }
+    };
+
+    client.handleRawMessage(genericB20Event);
+    client.handleRawMessage(ddbFulfilledEvent);
+    await new Promise((r) => setTimeout(r, 200));
+
+    assert.equal(emitted.length, 1, "Only the full Acrobatics (+2) roll should be emitted");
+    assert.equal(emitted[0].actionName, "Acrobatics (+2)");
+    assert.deepEqual(emitted[0].d20Values, [10, 9]);
+  });
+
+  it("DdbGameLogClient deduplicates Initiative with decimal tiebreaker (9.14 vs 9) and rounds float noise", async () => {
+    const emitted = [];
+    const client = new DdbGameLogClient({
+      onRoll: (roll) => emitted.push(roll)
+    });
+
+    const b20InitEvent = {
+      id: "b20-init-tiebreaker-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "888777666",
+      data: {
+        request: {
+          action: "roll",
+          character: { name: "InitTester", id: "888777666" }
+        },
+        render: `<div class="beyond20-message"><div class="beyond20-roll-cell"><span class="beyond20-roll-value">9.14</span><div class="beyond20-roll-formula">1d20 + 2.14</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d20</div><span class="beyond20-roll-die-result">7</span></div></div></div>`
+      }
+    };
+
+    const ddbInitEvent = {
+      id: "ddb-init-tiebreaker-1",
+      source: "Web",
+      eventType: "dice/roll/fulfilled",
+      entityId: "888777666",
+      data: {
+        action: "Initiative",
+        context: { name: "InitTester", entityId: "888777666" },
+        rollId: "init-roll-uuid-1",
+        __b20Override__: true,
+        rolls: [
+          {
+            rollType: "check",
+            rollKind: "",
+            diceNotation: { constant: 2, set: [{ count: 1, dieType: "d20", operation: 0, dice: [{ dieType: "d20", dieValue: 7 }] }] },
+            diceNotationStr: "1d20 + 2.14",
+            result: { constant: 2, values: [7], total: 9, text: "7+2.14" }
+          },
+          {
+            rollType: "check",
+            rollKind: "",
+            diceNotation: { constant: 2, set: [{ count: 1, dieType: "d20", operation: 0, dice: [{ dieType: "d20", dieValue: 8 }] }] },
+            diceNotationStr: "1d20 + 2.14",
+            result: { constant: 2, values: [8], total: 10, text: "8+2.14" }
+          }
+        ]
+      }
+    };
+
+    client.handleRawMessage(b20InitEvent);
+    client.handleRawMessage(ddbInitEvent);
+    await new Promise((r) => setTimeout(r, 200));
+
+    assert.equal(emitted.length, 1, "Only the full Initiative roll should be emitted");
+    assert.equal(emitted[0].actionName, "Initiative");
+    assert.equal(emitted[0].rollType, "initiative");
+    assert.deepEqual(emitted[0].d20Values, [7, 8]);
+
+    // Verify float noise rounding in Beyond20 WebSocket parser (2 + 2.14 = 4.140000000000001 -> 4.14)
+    const floatNoiseB20 = {
+      id: "b20-float-noise-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "777666555",
+      data: {
+        request: {
+          action: "roll",
+          name: "Initiative",
+          modifier: 2.14,
+          character: { name: "FloatTester", id: "777666555" }
+        },
+        render: `<div class="beyond20-message"><div class="beyond20-roll-cell"><span class="beyond20-roll-value">4.140000000000001</span><div class="beyond20-roll-formula">1d20 + 2.14</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d20</div><span class="beyond20-roll-die-result">2</span></div></div></div>`
+      }
+    };
+    const parsedFloat = parseDdbGameLogEvent(floatNoiseB20);
+    assert.equal(parsedFloat[0].total, 4.14);
+  });
+
+  it("postDdbRollToFoundry allows consecutive same-source damage clicks within 10s when roll IDs differ", async () => {
+    let createdCount = 0;
+    const mockActor = {
+      id: "actor-dmg-repeat-1",
+      name: "DmgTester",
+      items: [],
+      testUserPermission: () => true,
+      flags: { ddbimporter: { ddbbeyond: { characterId: "555444333" } } }
+    };
+    const fakeMessages = [];
+    globalThis.ChatMessage = {
+      getSpeaker: ({ actor }) => ({ actor: actor?.id, alias: actor?.name }),
+      create: async (payload) => {
+        createdCount += 1;
+        fakeMessages.push({ ...payload, timestamp: Date.now() });
+        return payload;
+      }
+    };
+    globalThis.CONST = { TOKEN_DISPOSITIONS: { HOSTILE: -1, NEUTRAL: 0, FRIENDLY: 1, SECRET: -2 } };
+    globalThis.CONFIG = { sounds: { dice: "dice.wav" } };
+    globalThis.Roll = class FakeRoll {
+      constructor(formula) {
+        this.formula = formula;
+        this.total = 5;
+        this.dice = [{ results: [{ result: 3, active: true }] }];
+        this.terms = [{ faces: 4, results: [{ result: 3, active: true }] }];
+      }
+      async evaluate() { return this; }
+      async render() { return "<div>5</div>"; }
+    };
+    globalThis.game = {
+      actors: [mockActor],
+      user: { id: "player-1", isGM: false },
+      users: { find: () => null, get: () => null },
+      settings: { get: () => false },
+      messages: { contents: fakeMessages }
+    };
+    globalThis.window = {};
+
+    await postDdbRollToFoundry({
+      id: "ddb-dmg-click-1",
+      messageId: "ddb-dmg-click-1",
+      source: "ddb",
+      characterName: "DmgTester",
+      ddbCharacterId: "555444333",
+      actionName: "Dagger",
+      rollType: "damage",
+      rollMode: "normal",
+      dice: [{ dieType: "d4", dieValue: 3, dropped: false }],
+      modifier: 2,
+      total: 5,
+      formula: "1d4 + 2"
+    });
+
+    await postDdbRollToFoundry({
+      id: "ddb-dmg-click-2",
+      messageId: "ddb-dmg-click-2",
+      source: "ddb",
+      characterName: "DmgTester",
+      ddbCharacterId: "555444333",
+      actionName: "Dagger",
+      rollType: "damage",
+      rollMode: "normal",
+      dice: [{ dieType: "d4", dieValue: 4, dropped: false }],
+      modifier: 2,
+      total: 6,
+      formula: "1d4 + 2"
+    });
+
+    assert.equal(createdCount, 2, "Second DDB damage click with a new roll ID must not be blocked by the 10s window");
+
+    delete globalThis.ChatMessage;
+    delete globalThis.CONST;
+    delete globalThis.CONFIG;
+    delete globalThis.Roll;
+    delete globalThis.game;
+    delete globalThis.window;
+  });
+
+  it("parseDdbGameLogEvent merges multi-damage Beyond20 WebSocket cells and extracts damageType & cleaned actionName", () => {
+    const multiDmgEvent = {
+      id: "b20-multi-dmg-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123456",
+      data: {
+        request: {
+          action: "roll",
+          type: "attack",
+          name: "Longsword (2-Handed) (Attack)",
+          character: { name: "Paladin", id: "123456" }
+        },
+        render: `<div class="beyond20-message">
+          <div class="beyond20-roll-cell"><span class="beyond20-roll-value">19</span><div class="beyond20-roll-formula">1d20 + 7</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d20</div><span class="beyond20-roll-die-result">12</span></div></div>
+          <div class="beyond20-roll-cell"><div class="beyond20-roll-label">Slashing</div><span class="beyond20-roll-value">9</span><div class="beyond20-roll-formula">1d10 + 4</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d10</div><span class="beyond20-roll-die-result">5</span></div></div>
+          <div class="beyond20-roll-cell"><div class="beyond20-roll-label">Radiant</div><span class="beyond20-roll-value">10</span><div class="beyond20-roll-formula">2d8</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">2d8</div><span class="beyond20-roll-die-result">4</span><span class="beyond20-roll-die-result">6</span></div></div>
+        </div>`
+      }
+    };
+
+    const parsed = parseDdbGameLogEvent(multiDmgEvent);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].actionName, "Longsword");
+    assert.equal(parsed[0].rollType, "attack");
+    assert.ok(parsed[0].pairedDamage, "pairedDamage must be attached for multi-damage Beyond20 attack");
+    assert.equal(parsed[0].pairedDamage.total, 19);
+    assert.equal(parsed[0].pairedDamage.damageType, "slashing");
+    assert.equal(parsed[0].pairedDamage.dice.length, 3);
+    assert.equal(parsed[0].pairedDamage.components.length, 2);
+    assert.equal(parsed[0].pairedDamage.components[1].damageType, "radiant");
+  });
+
+  it("parseBeyond20ChatMessage and postDdbRollToFoundry preserve Beyond20 saveDC, saveAbility, and damageType without sheet item", async () => {
+    const b20Msg = {
+      id: "b20-save-msg-1",
+      speaker: { alias: "Wizard" },
+      flags: {
+        beyond20: {
+          title: "Custom Blast",
+          type: "spell-damage",
+          "damage-type": "lightning",
+          "save-dc": 16,
+          "save-ability": "Dexterity"
+        }
+      },
+      content: `<div class="beyond20-message"><div class="beyond20-header">Custom Blast</div><div>DC 16 Dexterity Save</div><div class="dice-roll"><div class="dice-formula">6d6</div><h4 class="dice-total">22</h4></div></div>`
+    };
+
+    const parsed = parseBeyond20ChatMessage(b20Msg);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].rollType, "damage");
+    assert.equal(parsed[0].damageType, "lightning");
+    assert.equal(parsed[0].saveDC, 16);
+    assert.equal(parsed[0].saveAbility, "dex");
+
+    const createdMessages = [];
+    globalThis.ChatMessage = {
+      getSpeaker: ({ alias }) => ({ alias }),
+      create: async (payload) => {
+        createdMessages.push(payload);
+        return payload;
+      }
+    };
+    globalThis.CONST = { TOKEN_DISPOSITIONS: { HOSTILE: -1, NEUTRAL: 0, FRIENDLY: 1, SECRET: -2 } };
+    globalThis.CONFIG = { sounds: { dice: "dice.wav" } };
+    globalThis.Roll = class FakeRoll {
+      constructor(formula) {
+        this.formula = formula;
+        this.total = 22;
+        this.dice = [{ results: [{ result: 4, active: true }] }];
+        this.terms = [{ faces: 6, results: [{ result: 4, active: true }] }];
+      }
+      async evaluate() { return this; }
+      async render() { return "<div>22</div>"; }
+    };
+    globalThis.game = {
+      actors: [],
+      user: { id: "gm-1", isGM: true },
+      settings: { get: () => false },
+      messages: { contents: [] }
+    };
+
+    await postDdbRollToFoundry(parsed[0]);
+    assert.equal(createdMessages.length, 1);
+    assert.ok(createdMessages[0].content.includes("DC 16 DEX"), "Save card must display extracted DC 16 DEX");
+    assert.ok(createdMessages[0].content.includes("FAILED SAVE"), "Save card must render save damage breakdown");
+
+    delete globalThis.ChatMessage;
+    delete globalThis.CONST;
+    delete globalThis.CONFIG;
+    delete globalThis.Roll;
+    delete globalThis.game;
+  });
+
+  it("postDdbRollToFoundry forwards Beyond20 selected damageType (e.g. fire) when hijacking multi-damage-type sheet spell (e.g. Sorcerous Burst)", async () => {
+    const executed = [];
+    const sorcerousBurstItem = {
+      id: "spell-sb-1",
+      name: "Sorcerous Burst",
+      type: "spell",
+      system: {
+        level: 0,
+        actionType: "rsak",
+        damage: { parts: [["1d8", "acid"]] }
+      }
+    };
+    const sorcActor = {
+      id: "actor-sorc-1",
+      name: "Vos'langi",
+      items: [sorcerousBurstItem],
+      system: {
+        attributes: { spellcasting: "cha", prof: 5 },
+        abilities: { cha: { mod: 5 } },
+        details: { level: 16 }
+      },
+      flags: { ddbimporter: { ddbbeyond: { characterId: "123045754" } } },
+      getActiveTokens: () => [],
+      getFlag: () => null,
+      testUserPermission: () => true
+    };
+
+    globalThis.game = {
+      actors: [sorcActor],
+      user: { id: "gm-1", isGM: true },
+      users: { find: () => null },
+      settings: { get: () => false },
+      messages: { contents: [] },
+      modules: {
+        get: (id) => id === MODULE_ID ? {
+          api: {
+            socket: {
+              executeAsGM: async (handler, config, actorId, userId) => {
+                if (handler !== "claimDdbRoll") {
+                  executed.push({ handler, config, actorId, userId });
+                }
+                return true;
+              }
+            }
+          }
+        } : null
+      }
+    };
+
+    const sbEvent = {
+      id: "b20-sb-fire-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: {
+        request: {
+          action: "roll",
+          type: "spell-attack",
+          name: "Sorcerous Burst",
+          character: { name: "Vos'langi", id: "123045754" }
+        },
+        render: `<div class="beyond20-message">
+          <div class="beyond20-roll-cell"><span class="beyond20-roll-value">22</span><div class="beyond20-roll-formula">1d20 + 10</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d20</div><span class="beyond20-roll-die-result">12</span></div></div>
+          <div class="beyond20-roll-cell"><div class="beyond20-roll-label">Fire</div><span class="beyond20-roll-value">18</span><div class="beyond20-roll-formula">4d8</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">4d8</div><span class="beyond20-roll-die-result">5</span><span class="beyond20-roll-die-result">4</span><span class="beyond20-roll-die-result">6</span><span class="beyond20-roll-die-result">3</span></div></div>
+        </div>`
+      }
+    };
+
+    const parsed = parseDdbGameLogEvent(sbEvent);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].pairedDamage?.damageType, "fire");
+
+    const res = await postDdbRollToFoundry(parsed[0]);
+    assert.equal(res?.hijacked, true);
+    assert.equal(executed.length, 1);
+    assert.equal(executed[0].handler, "runSpellAttackRoll");
+    assert.equal(executed[0].config.damageType, "fire", "Hijacked spell config must use Beyond20 selected fire damageType instead of sheet default acid");
+
+    // Also verify plural request["damage-types"] and HTML title attribute extraction when cell label is absent
+    const sbPluralEvent = {
+      id: "b20-sb-fire-2",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: {
+        request: {
+          action: "roll",
+          type: "spell-attack",
+          name: "Sorcerous Burst",
+          "damage-types": ["Fire"],
+          character: { name: "Vos'langi", id: "123045754" }
+        },
+        render: `<div class="beyond20-message">
+          <div class="beyond20-roll-cell"><span class="beyond20-roll-value">20</span><div class="beyond20-roll-formula">1d20 + 10</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d20</div><span class="beyond20-roll-die-result">10</span></div></div>
+          <div class="beyond20-roll-cell"><span class="beyond20-roll-value" title="Fire">15</span><div class="beyond20-roll-formula">4d8</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">4d8</div><span class="beyond20-roll-die-result">4</span></div></div>
+        </div>`
+      }
+    };
+    const parsedPlural = parseDdbGameLogEvent(sbPluralEvent);
+    assert.equal(parsedPlural[0].pairedDamage?.damageType, "fire");
+
+    // Also verify 2-d20 attack-only packet (rollDamage: false, advantage: 1) with request["damage-types"]
+    executed.length = 0;
+    const sbAttackOnlyEvent = {
+      id: "b20-sb-fire-3",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: {
+        request: {
+          action: "roll",
+          type: "spell-attack",
+          name: "Sorcerous Burst",
+          advantage: 1,
+          rollAttack: true,
+          rollDamage: false,
+          "damage-types": ["Fire"],
+          character: { name: "Vos'langi", id: "123045754" }
+        },
+        render: `<div class="beyond20-message"><div class="beyond20-roll-result beyond20-roll-cells">
+          <div class="beyond20-roll-cell"><span class="beyond20-roll-value">24</span><div class="beyond20-roll-formula">1d20 + 12</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d20</div><span class="beyond20-roll-die-result">12</span></div></div>
+          <div class="beyond20-roll-cell"><span class="beyond20-roll-value">25</span><div class="beyond20-roll-formula">1d20 + 12</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d20</div><span class="beyond20-roll-die-result">13</span></div></div>
+        </div><button class="beyond20-button-roll-damages">Roll Damages</button></div>`
+      }
+    };
+    const parsedAttackOnly = parseDdbGameLogEvent(sbAttackOnlyEvent);
+    assert.equal(parsedAttackOnly.length, 1);
+    assert.equal(parsedAttackOnly[0].damageType, "fire");
+    const resAttackOnly = await postDdbRollToFoundry(parsedAttackOnly[0]);
+    assert.equal(resAttackOnly?.hijacked, true);
+    assert.equal(executed.length, 1);
+    assert.equal(executed[0].config.damageType, "fire");
+
+    delete globalThis.game;
+  });
+
+  it("runSpellAttackRoll and runAttackRoll face-match injectedDamageDice and injectedDamageTotal from Beyond20", async () => {
+    class MockDie {
+      constructor(faces, count) {
+        this.faces = faces;
+        this.results = Array.from({ length: count }, () => ({ result: 1, active: true }));
+      }
+      get total() {
+        return this.results.reduce((acc, r) => acc + (r.active !== false ? r.result : 0), 0);
+      }
+      clone() {
+        const d = new MockDie(this.faces, 0);
+        d.results = this.results.map((r) => ({ ...r }));
+        return d;
+      }
+    }
+    class MockRoll {
+      constructor(formula) {
+        this.formula = formula;
+        this.terms = [];
+        this.dice = [];
+        this._total = undefined;
+        const m = String(formula).trim().match(/^(\d+)d(\d+)/i);
+        if (m) {
+          const d = new MockDie(Number(m[2]), Number(m[1]));
+          this.terms.push(d);
+          this.dice.push(d);
+        }
+        const modMatch = String(formula).match(/([+-])\s*(\d+)\s*$/);
+        const mod = modMatch ? (modMatch[1] === "-" ? -Number(modMatch[2]) : Number(modMatch[2])) : 0;
+        this._baseMod = mod;
+      }
+      get total() {
+        if (this._total !== undefined) return this._total;
+        return this.dice.reduce((acc, d) => acc + d.total, 0) + this._baseMod;
+      }
+      static fromTerms(terms) {
+        const r = new MockRoll("1d20");
+        r.terms = terms;
+        r.dice = terms.filter((t) => Array.isArray(t?.results));
+        return r;
+      }
+      async evaluate() { return this; }
+      async render() { return `<div class="dice-roll"><h4 class="dice-total">${this.total}</h4></div>`; }
+    }
+
+    const createdMessages = [];
+    globalThis.Roll = MockRoll;
+    globalThis.Die = MockDie;
+    globalThis.CONST = { TOKEN_DISPOSITIONS: { HOSTILE: -1, NEUTRAL: 0, FRIENDLY: 1, SECRET: -2 } };
+    globalThis.CONFIG = { sounds: { dice: "dice.wav" } };
+    globalThis.ChatMessage = {
+      getSpeaker: ({ actor }) => ({ actor: actor?.id, alias: actor?.name }),
+      create: async (payload) => {
+        createdMessages.push(payload);
+        return payload;
+      }
+    };
+    const actor = {
+      id: "actor-face-match",
+      name: "Vos'langi",
+      items: [],
+      system: {
+        attributes: { spellcasting: "cha", prof: 5, spell: { dc: 18 } },
+        abilities: { str: { mod: 0 }, dex: { mod: 2 }, cha: { mod: 5 } },
+        details: { level: 16 },
+        spells: {}
+      },
+      getActiveTokens: () => [],
+      getFlag: () => null
+    };
+    const handlers = {};
+    globalThis.window = {};
+    globalThis.socketlib = {
+      registerModule: () => ({
+        register: (name, fn) => { handlers[name] = fn; }
+      })
+    };
+    const actorMap = new Map([[actor.id, actor]]);
+    globalThis.game = {
+      user: { id: "gm-1", isGM: true, targets: new Set() },
+      users: { get: () => ({ id: "gm-1", isGM: true, targets: new Set() }) },
+      settings: { settings: new Map(), get: () => false },
+      modules: { get: () => ({ active: true }) },
+      actors: { get: (id) => actorMap.get(id) }
+    };
+    registerSocketHandlers();
+
+    await handlers.runSpellAttackRoll({
+      spellName: "Sorcerous Burst",
+      spellAbility: "cha",
+      resolutionMethod: "attack",
+      damageType: "fire",
+      damageDieSize: "8",
+      damageDiceCount: 3,
+      baseLevel: 0,
+      isCantripScale: false,
+      injectedD20_1: 12,
+      injectedD20_2: 13,
+      injectedDamageDice: [
+        { dieType: "d8", dieValue: 7, dropped: false },
+        { dieType: "d8", dieValue: 4, dropped: false },
+        { dieType: "d8", dieValue: 6, dropped: false }
+      ],
+      injectedDamageTotal: 17
+    }, actor.id, "gm-1");
+
+    assert.equal(createdMessages.length, 1);
+    const spellDmgRoll = createdMessages[0].rolls[2];
+    assert.deepEqual(spellDmgRoll.terms[0].results.map((r) => r.result), [7, 4, 6]);
+    assert.equal(spellDmgRoll.total, 17);
+
+    await handlers.runAttackRoll({
+      chatCardTitle: "Longsword",
+      weaponName: "Longsword",
+      damageType: "slashing",
+      damageDiceCount: 1,
+      damageDieSize: "8",
+      abilityScore: "str",
+      injectedD20_1: 15,
+      injectedD20_2: 10,
+      injectedDamageDice: [{ dieType: "d8", dieValue: 7, dropped: false }],
+      injectedDamageTotal: 7
+    }, actor.id, "gm-1");
+
+    assert.equal(createdMessages.length, 2);
+    const weaponDmgRoll = createdMessages[1].rolls[2];
+    assert.equal(weaponDmgRoll.terms[0].results[0].result, 7);
+    assert.equal(weaponDmgRoll.total, 7);
+
+    delete globalThis.socketlib;
+    delete globalThis.attackSocket;
+    delete globalThis.window;
+    delete globalThis.Roll;
+    delete globalThis.Die;
+    delete globalThis.CONST;
+    delete globalThis.CONFIG;
+    delete globalThis.ChatMessage;
+    delete globalThis.game;
+  });
+
+  it("parseDdbGameLogEvent extracts pairedDamage from Beyond20 .beyond20-roll-damage blocks (Dagger and exploding Sorcerous Burst)", () => {
+    const daggerEvent = {
+      id: "b20-dagger-dmg-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: {
+        request: {
+          action: "roll",
+          type: "attack",
+          name: "Dagger",
+          advantage: 1,
+          rollAttack: true,
+          rollDamage: true,
+          "damage-types": ["Piercing"],
+          character: { name: "Vos'langi", id: "123045754" }
+        },
+        render: `<div class="beyond20-message"><div class='beyond20-roll-result beyond20-roll-cells'><div class="beyond20-roll-cell"><span class='beyond20-roll-value'>14</span><div class='dice-formula beyond20-roll-formula'>1d20 + 7</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><span class='beyond20-roll-die-result'>7</span></div></div><div class="beyond20-roll-cell"><span class='beyond20-roll-value'>14</span><div class='dice-formula beyond20-roll-formula'>1d20 + 7</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><span class='beyond20-roll-die-result'>7</span></div></div></div><div class='beyond20-roll-result beyond20-roll-damage'><b>Piercing Damage: </b><span class='beyond20-roll-value'>5</span><div class='dice-formula beyond20-roll-formula'>1d4 + 2</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d4</div><span class='beyond20-roll-die-result'>3</span></div></div></div>`
+      }
+    };
+
+    const parsedDagger = parseDdbGameLogEvent(daggerEvent);
+    assert.equal(parsedDagger.length, 1);
+    assert.equal(parsedDagger[0].rollType, "attack");
+    assert.ok(parsedDagger[0].pairedDamage);
+    assert.equal(parsedDagger[0].pairedDamage.total, 5);
+    assert.equal(parsedDagger[0].pairedDamage.damageType, "piercing");
+    assert.deepEqual(parsedDagger[0].pairedDamage.dice.map((d) => d.dieValue), [3]);
+
+    const sbBurstEvent = {
+      id: "b20-sb-burst-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: {
+        request: {
+          action: "roll",
+          type: "spell-attack",
+          name: "Sorcerous Burst",
+          advantage: 1,
+          rollAttack: true,
+          rollDamage: true,
+          "damage-types": ["Cold"],
+          character: { name: "Vos'langi", id: "123045754" }
+        },
+        render: `<div class="beyond20-message"><div class='beyond20-roll-result beyond20-roll-cells'><div class="beyond20-roll-cell"><span class='beyond20-roll-value'>28</span><div class='dice-formula beyond20-roll-formula'>1d20 + 12</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><span class='beyond20-roll-die-result'>16</span></div></div><div class="beyond20-roll-cell"><span class='beyond20-roll-value'>21</span><div class='dice-formula beyond20-roll-formula'>1d20 + 12</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><span class='beyond20-roll-die-result'>9</span></div></div></div><div class='beyond20-roll-result beyond20-roll-damage'><b>Cold Damage: </b><span class='beyond20-roll-value'>16</span><div class='dice-formula beyond20-roll-formula'>3d8</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>3d8</div><span class='beyond20-roll-die-result'>6</span><span class='beyond20-roll-die-result'>2</span><span class='beyond20-roll-die-result'>8</span></div></div><div class='beyond20-roll-result beyond20-roll-damage'><b>Burst (1): </b><span class='beyond20-roll-value'>8</span><div class='dice-formula beyond20-roll-formula'>1d8</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d8</div><span class='beyond20-roll-die-result'>8</span></div></div><div class='beyond20-roll-result beyond20-roll-damage'><b>Burst (2): </b><span class='beyond20-roll-value'>2</span><div class='dice-formula beyond20-roll-formula'>1d8</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d8</div><span class='beyond20-roll-die-result'>2</span></div></div></div>`
+      }
+    };
+
+    const parsedSb = parseDdbGameLogEvent(sbBurstEvent);
+    assert.equal(parsedSb.length, 1);
+    assert.ok(parsedSb[0].pairedDamage);
+    assert.equal(parsedSb[0].pairedDamage.total, 26);
+    assert.equal(parsedSb[0].pairedDamage.damageType, "cold");
+    assert.deepEqual(parsedSb[0].pairedDamage.dice.map((d) => d.dieValue), [6, 2, 8, 8, 2]);
+  });
+
+  it("parseDdbGameLogEvent excludes Beyond20 Critical Damage block from pairedDamage.total so crit bonus is not double-counted", () => {
+    const critEvent = {
+      id: "b20-sb-crit-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: {
+        request: {
+          action: "roll",
+          type: "spell-attack",
+          name: "Sorcerous Burst",
+          advantage: 1,
+          rollAttack: true,
+          rollDamage: true,
+          "damage-types": ["Fire"],
+          character: { name: "Vos'langi", id: "123045754" }
+        },
+        render: `<div class="beyond20-message"><div class='beyond20-roll-result beyond20-roll-cells'><div class="beyond20-roll-cell"><span class='beyond20-roll-value'>32</span><div class='dice-formula beyond20-roll-formula'>1d20 + 12</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><span class='beyond20-roll-die-result'>20</span></div></div><div class="beyond20-roll-cell"><span class='beyond20-roll-value'>21</span><div class='dice-formula beyond20-roll-formula'>1d20 + 12</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d20</div><span class='beyond20-roll-die-result'>9</span></div></div></div><div class='beyond20-roll-result beyond20-roll-damage'><b>Fire Damage: </b><span class='beyond20-roll-value'>20</span><div class='dice-formula beyond20-roll-formula'>3d8</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>3d8</div><span class='beyond20-roll-die-result'>8</span><span class='beyond20-roll-die-result'>6</span><span class='beyond20-roll-die-result'>6</span></div></div><div class='beyond20-roll-result beyond20-roll-damage'><b>Burst (1): </b><span class='beyond20-roll-value'>1</span><div class='dice-formula beyond20-roll-formula'>1d8</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>1d8</div><span class='beyond20-roll-die-result'>1</span></div></div><div class='beyond20-roll-result beyond20-roll-damage'><b>Critical Damage: </b><span class='beyond20-roll-value'>24</span><div class='dice-formula beyond20-roll-formula'>24</div><div class='beyond20-roll-dice'><div class='beyond20-roll-dice-formula'>3d8</div><span class='beyond20-roll-die-result'>8</span><span class='beyond20-roll-die-result'>8</span><span class='beyond20-roll-die-result'>8</span></div></div></div>`
+      }
+    };
+
+    const parsed = parseDdbGameLogEvent(critEvent);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].isCrit, true);
+    assert.ok(parsed[0].pairedDamage);
+    assert.equal(parsed[0].pairedDamage.total, 21, "pairedDamage.total must exclude Critical Damage block (24)");
+    assert.deepEqual(parsed[0].pairedDamage.dice.map((d) => d.dieValue), [8, 6, 6, 1]);
+  });
+
+  it("DDB diagnostics track sources, outcomes, recent rolls ring buffer, and reset cleanly", () => {
+    resetDdbDiagnostics();
+    let stats = getDdbDiagnosticsStats();
+    assert.equal(stats.sources.ddb, 0);
+    assert.equal(stats.sources.beyond20Ws, 0);
+    assert.equal(stats.outcomes.deduped, 0);
+    assert.equal(getRecentDdbRolls().length, 0);
+
+    const emitted = [];
+    const client = new DdbGameLogClient({ onRoll: (r) => emitted.push(r) });
+    const sampleEvt = {
+      id: "diag-evt-1",
+      source: "Beyond20",
+      eventType: "custom/beyond20/roll",
+      entityId: "123045754",
+      data: {
+        request: {
+          action: "roll",
+          type: "spell-attack",
+          name: "Fire Bolt",
+          "damage-types": ["Fire"],
+          character: { name: "Vos'langi", id: "123045754" }
+        },
+        render: `<div class="beyond20-message"><div class="beyond20-roll-cell"><span class="beyond20-roll-value">20</span><div class="beyond20-roll-formula">1d20 + 10</div><div class="beyond20-roll-dice"><div class="beyond20-roll-dice-formula">1d20</div><span class="beyond20-roll-die-result">10</span></div></div></div>`
+      }
+    };
+
+    client.handleRawMessage(sampleEvt);
+    client.handleRawMessage(sampleEvt); // duplicate should increment deduped
+
+    stats = getDdbDiagnosticsStats();
+    assert.equal(emitted.length, 1);
+    assert.equal(stats.sources.beyond20Ws, 1);
+    assert.equal(stats.outcomes.deduped, 1);
+    assert.ok(stats.lastPacketAt);
+    const recent = getRecentDdbRolls();
+    assert.equal(recent.length, 1);
+    assert.equal(recent[0].actionName, "Fire Bolt");
+    assert.equal(recent[0].damageType, "fire");
+    assert.equal(recent[0].outcome, "deduped");
+
+    resetDdbDiagnostics();
+    assert.equal(getDdbDiagnosticsStats().sources.beyond20Ws, 0);
+    assert.equal(getRecentDdbRolls().length, 0);
   });
 });

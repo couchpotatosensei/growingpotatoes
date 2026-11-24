@@ -4,6 +4,11 @@
 
 import { MODULE_ID, SETTINGS } from "../src/constants.js";
 import { generateModuleMacros } from "../modules/macro-generator.js";
+import {
+  setSmartphoneWidgetEnabled,
+  updateSmartphoneSidebarVisibility,
+  refreshSmartphoneDisabledApps
+} from "../modules/smartphone-widget.js";
 
 export function registerSettings() {
   const registerFeature = (key, name, hint, requiresReload = true) => {
@@ -31,6 +36,60 @@ export function registerSettings() {
   registerFeature(SETTINGS.FEATURES.CHAT_CONTROLS, "Chat Mode Controls (IC / EM)", "Adds In-Character (/ic) and Emote (/em) toggles above the chat box.");
   registerFeature(SETTINGS.FEATURES.DICE_TRAY, "Dice Tray Copycat", "Adds a dedicated dice tray below the chat input with advantage/disadvantage, modifiers, and recent rolls.");
   registerFeature(SETTINGS.FEATURES.DDB_LISTENER, "D&D Beyond Game Log Listener", "Connects to your D&D Beyond campaign Game Log and renders rolls using Cheap Dice custom chat cards.");
+
+  // ---------------------------------------------------------------------------
+  // Isekai Smartphone Widget (Optional Prototype — Default Disabled)
+  // ---------------------------------------------------------------------------
+  game.settings.register(MODULE_ID, SETTINGS.FEATURES.SMARTPHONE_WIDGET, {
+    name: "[Feature] Isekai Smartphone Widget",
+    hint: "Enables the interactive in-game smartphone widget (Messages, System Log, Contacts, Academy Notes, Music, and Theme Switcher).",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: false,
+    requiresReload: false,
+    onChange: (value) => {
+      setSmartphoneWidgetEnabled(Boolean(value));
+    }
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.SMARTPHONE_HIDE_SIDEBAR, {
+    name: "Smartphone: Hide Right Sidebar for Players",
+    hint: "When the Smartphone Widget is enabled, hides Foundry's right sidebar for non-GM players by default (players can opt in to show it in Phone Settings).",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+    requiresReload: false,
+    onChange: () => {
+      updateSmartphoneSidebarVisibility();
+    }
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.SMARTPHONE_PLAYER_SHOW_SIDEBAR, {
+    name: "Smartphone: Show Right Sidebar",
+    hint: "Allows a player to show Foundry's right sidebar even when hidden by default.",
+    scope: "client",
+    config: false,
+    type: Boolean,
+    default: false,
+    requiresReload: false,
+    onChange: () => {
+      updateSmartphoneSidebarVisibility();
+    }
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.SMARTPHONE_DISABLED_APPS, {
+    name: "Smartphone: Disabled Player Apps",
+    scope: "world",
+    config: false,
+    type: Array,
+    default: [],
+    requiresReload: false,
+    onChange: () => {
+      refreshSmartphoneDisabledApps();
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // D&D Beyond Game Log Configuration (GM Only)

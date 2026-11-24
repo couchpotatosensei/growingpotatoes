@@ -280,6 +280,26 @@ function registerSocketHandlers() {
   socket.register("showTimerDialog", showTimerDialog);
   socket.register("closeTimerDialog", closeTimerDialog);
 
+  const gmClaimedDdbRolls = new Map();
+  socket.register("claimDdbRoll", (keys = [], source = "ddb") => {
+    const now = Date.now();
+    if (gmClaimedDdbRolls.size > 300) {
+      for (const [k, entry] of gmClaimedDdbRolls.entries()) {
+        if (now - entry.time > 15000) gmClaimedDdbRolls.delete(k);
+      }
+    }
+    const keyList = Array.isArray(keys) ? keys : [];
+    const isDuplicate = keyList.some((k) => {
+      const prev = gmClaimedDdbRolls.get(k);
+      return prev && prev.source !== source && (now - prev.time) < 10000;
+    });
+    if (isDuplicate) return false;
+    for (const k of keyList) {
+      gmClaimedDdbRolls.set(k, { source, time: now });
+    }
+    return true;
+  });
+
   window.TimerSocket = {
     start: (label, durationSeconds) => {
       const endTime = Date.now() + durationSeconds * 1000;
@@ -503,6 +523,13 @@ function registerSocketHandlers() {
         let passFloorCount = 0;
         for (let i = 0; i < damageDiceCount; i++) {
           let initialRoll = await new Roll(damageDieFormula).evaluate();
+          const injectedDie = Array.isArray(config.injectedDamageDice) ? config.injectedDamageDice[i] : undefined;
+          if (injectedDie !== undefined) {
+            const injVal = Number(injectedDie?.dieValue ?? injectedDie);
+            if (Number.isFinite(injVal)) {
+              injectDiceIntoRoll(initialRoll, [injectedDie], injVal);
+            }
+          }
           let currentResult = Number(initialRoll.total);
           passRolls.push(initialRoll);
 
@@ -1882,7 +1909,15 @@ function registerSocketHandlers() {
           await advRoll.evaluate();
         }
 
-        const dmgRoll = await new Roll(baseDamageFormula).evaluate();
+        let dmgRoll = await new Roll(baseDamageFormula).evaluate();
+        if (i === 1 && Array.isArray(config.injectedDamageDice) && config.injectedDamageDice.length > 0) {
+          const baseDie = dmgRoll.dice?.[0];
+          if (dmgRoll.dice?.length === 1 && baseDie && Array.isArray(baseDie.results) && baseDie.results.length < config.injectedDamageDice.length) {
+            const sizedFormula = baseDamageFormula.replace(/^\d*d\d+(?:x[^\s+]*)?/i, `${config.injectedDamageDice.length}d${baseDie.faces}`);
+            dmgRoll = await new Roll(sizedFormula).evaluate();
+          }
+          injectDiceIntoRoll(dmgRoll, config.injectedDamageDice, config.injectedDamageTotal ?? null);
+        }
 
         rolledObjects.push(atkRoll, advRoll, dmgRoll);
 

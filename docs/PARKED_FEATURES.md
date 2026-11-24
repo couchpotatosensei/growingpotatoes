@@ -1,0 +1,28 @@
+# Parked Features & Reminders
+
+- **Limited-Ownership Player View Token HUD:**
+  - Parked & disabled in v1.0.35. Remind the user about this whenever working on Token HUD or player view permissions.
+  - Concept: Players right-clicking tokens they have `LIMITED` permission on (e.g., NPCs) open a stripped-down Token HUD showing AC, Elevation, and Target button without exposing owner macros or stats.
+  - Implementation reference: Overriding `Token.prototype._canHUD` and `Token.prototype._onClickRight` to allow `LIMITED` permission right-clicks, and filtering controls in `renderTokenHUD`.
+- **Token HUD Top-Row AC & Elevation Badges (Player View):**
+  - Parked & disabled in v1.0.36. Remind the user about this whenever working on player Token HUD badges.
+  - Concept: Displaying AC and Elevation badges alongside the Spell Save DC badge at top of the player's Token HUD for their owned tokens. Reverted back to displaying only Spell Save DC.
+- **Future Goals / Directions for Player Badges:**
+  - Explore toggle-able badges for players (individual on/off toggles).
+  - Add a temporary disable / killswitch feature in the module settings.
+  - Versatility and flexibility in what badges can show (custom stats, configurable attributes, or condition-based display).
+- **DDB Fallback Card Parity Reminder:**
+  - Whenever modifying Dice Stuff chat card layouts (`modules/socket-handlers.js`), ALWAYS ask the user if they want to apply the same visual/layout changes to the DDB fallback cards in `modules/ddb-listener.js` (`buildDdbCustomChatCardHtml`, `buildDdbSpellAttackCardHtml`).
+- **Beyond20 Roll Interception:**
+  - Concept: Intercept Beyond20 browser extension rolls in Foundry via `Hooks.on("preCreateChatMessage", ...)` (detecting `flags.beyond20` / `.beyond20-message` HTML) and route them into Cheap Dice custom cards instead of Beyond20's default chat cards.
+- **Smartphone Widget Adventure Ideas (`modules/smartphone-widget.js`):**
+  - **Roleplay & Narrative:** Dead-drop/burner NPC threads in `Messages` + `Contacts`; scene-based `Mana-Fi` signal dead zones (e.g., Antimagic Fields / Underdark) disabling `Messages` or `Academy`; dedicated in-character group chat.
+  - **Exploration & Investigation:** `Camera` + `Photos` evidence log / clue board in `Player Photo Albums`; Bestiary/Arcane Scanner (`Camera` + `Academy`) unlocking lore/resistances on scanned tokens; Quest Board / Bounties app; Mini-Atlas / Pin Drop app for discovered locations.
+  - **Combat & Survival:** Party Vitals / "Find My Party" status widget (Healthy/Bloodied/Downed, conditions, concentration); Short/Long Rest & resource tracker (hit dice, spell slots, exhaustion, rations, torches); GM-triggered Timer / Countdown in the lock screen or status bar.
+  - **Downtime & Flavor:** Guild Bank / Coin Pouch / Shop app; Notepad app (quick scratchpad / session notes synced to player journal); Voice Memos; Diegetic Soundboard / BGM (`Music`) with GM-pushed ambient tracks or NPC ringtones.
+- **Smartphone Embedded Dice Stuff App (`modules/smartphone-widget.js` & `modules/custom-rolls.js`):**
+  - Concept: Mount Dice Stuff's compact view (`mountCompactApp`) directly inside the smartphone screen as an in-phone app (`_currentApp === "dice-stuff"`) with Refresh, Settings/Theme, and Popout buttons instead of opening a separate Foundry `Dialog`.
+  - Saved implementation reference: `@docs/smartphone-dice-stuff-app.md`.
+- **Smartphone Music App — Spotify "Now Playing" Sync (Display-Only):**
+  - Concept: Sync the smartphone `Music` app to the GM's Spotify account to display what's currently playing (track title, artist, album art, progress/playing state) with no playback controls.
+  - Implementation notes: Use Spotify Web API (`GET /v1/me/player/currently-playing`) with read-only `user-read-currently-playing` scope via OAuth 2.0 PKCE in the browser; GM client polls every ~5–10s and broadcasts metadata to players via `game.socket`. Requires a Spotify Developer App with HTTPS Redirect URI (metadata only, no audio streaming).

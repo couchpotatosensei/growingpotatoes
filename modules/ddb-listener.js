@@ -8,6 +8,73 @@ import { getCardDispositionWrapper, injectD20IntoRoll, injectDiceIntoRoll } from
 import { buildSpellConfigFromItem } from "./custom-rolls.js";
 
 const DDB_WS_BASE_URL = "wss://game-log-api-live.dndbeyond.com/v1";
+const recentCrossSourceRolls = new Map();
+
+const MAX_RECENT_DIAG_ROLLS = 25;
+function createEmptyDdbDiagnostics() {
+  return {
+    startedAt: Date.now(),
+    lastPacketAt: null,
+    reconnects: 0,
+    sources: { ddb: 0, beyond20Ws: 0, beyond20Chat: 0 },
+    outcomes: { hijacked: 0, fallback: 0, deduped: 0, dropped: 0 },
+    recentRolls: []
+  };
+}
+let ddbDiagnostics = createEmptyDdbDiagnostics();
+
+function recordDdbDiagnosticRoll(roll, outcome, sourceOverride = null) {
+  const src = sourceOverride || (roll?.source === "beyond20" ? "beyond20Ws" : (roll?.source || "ddb"));
+  if (outcome && Object.prototype.hasOwnProperty.call(ddbDiagnostics.outcomes, outcome)) {
+    ddbDiagnostics.outcomes[outcome] += 1;
+  }
+  ddbDiagnostics.recentRolls.push({
+    time: new Date().toLocaleTimeString(),
+    source: src,
+    characterName: roll?.characterName || "",
+    actionName: roll?.actionName || "",
+    rollType: roll?.rollType || "",
+    damageType: roll?.pairedDamage?.damageType || roll?.damageType || "",
+    total: roll?.total ?? null,
+    outcome
+  });
+  if (ddbDiagnostics.recentRolls.length > MAX_RECENT_DIAG_ROLLS) {
+    ddbDiagnostics.recentRolls.splice(0, ddbDiagnostics.recentRolls.length - MAX_RECENT_DIAG_ROLLS);
+  }
+}
+
+/**
+ * Returns a snapshot of DDB/Beyond20 listener diagnostics for console troubleshooting.
+ * @returns {object}
+ */
+export function getDdbDiagnosticsStats() {
+  return {
+    startedAt: new Date(ddbDiagnostics.startedAt).toISOString(),
+    lastPacketAt: ddbDiagnostics.lastPacketAt ? new Date(ddbDiagnostics.lastPacketAt).toISOString() : null,
+    connectedCampaigns: activeClient ? activeClient.getConnectedCampaignIds() : [],
+    reconnects: ddbDiagnostics.reconnects,
+    sources: { ...ddbDiagnostics.sources },
+    outcomes: { ...ddbDiagnostics.outcomes },
+    recentCount: ddbDiagnostics.recentRolls.length
+  };
+}
+
+/**
+ * Returns recent intercepted DDB/Beyond20 rolls (newest first) for `console.table()`.
+ * @param {number} [limit=15]
+ * @returns {Array<object>}
+ */
+export function getRecentDdbRolls(limit = 15) {
+  const n = Math.max(1, Number(limit) || 15);
+  return ddbDiagnostics.recentRolls.slice(-n).reverse();
+}
+
+/**
+ * Resets DDB/Beyond20 session diagnostic counters and recent roll history.
+ */
+export function resetDdbDiagnostics() {
+  ddbDiagnostics = createEmptyDdbDiagnostics();
+}
 
 /**
  * Escapes HTML special characters to prevent markup injection.
@@ -35,11 +102,16 @@ const DND5E_SKILLS = new Set([
  * @param {string} rawType
  * @returns {"attack" | "damage" | "heal" | "save" | "check" | "skill" | "initiative" | "spell" | "other"}
  */
+const DND5E_DAMAGE_TYPES = new Set([
+  "acid", "bludgeoning", "cold", "fire", "force", "lightning",
+  "necrotic", "piercing", "poison", "psychic", "radiant", "slashing", "thunder"
+]);
+
 export function normalizeDdbRollType(rawType) {
   const t = String(rawType || "").toLowerCase().trim();
   if (t === "to hit" || t === "attack") return "attack";
   if (t === "heal" || t === "healing") return "heal";
-  if (t === "damage") return "damage";
+  if (t === "damage" || t.endsWith(" damage") || DND5E_DAMAGE_TYPES.has(t)) return "damage";
   if (t === "save" || t === "saving throw") return "save";
   if (t === "skill") return "skill";
   if (t === "check" || t === "ability") return "check";
@@ -79,14 +151,72 @@ export function parseDdbGameLogEvent(rawEvent) {
   if (!evt || typeof evt !== "object") return [];
 
   // DDB wraps live messages under eventType === "dice/roll/fulfilled" (or similar)
+  // Beyond20 (with DDB Digital Dice off) posts "custom/beyond20/roll" onto the same Game Log WebSocket
+  if (typeof evt.data === "string") {
+    try {
+      evt = { ...evt, data: JSON.parse(evt.data) };
+    } catch {
+      // keep original evt if data is not JSON
+    }
+  }
   const eventType = String(evt.eventType || evt.type || "").toLowerCase();
-  if (eventType && !eventType.includes("dice/roll") && !eventType.includes("roll/fulfilled")) {
+  if (eventType === "custom/beyond20/roll" || (String(evt.source || "").toLowerCase() === "beyond20" && (evt.data?.render || evt.data?.request))) {
+    return parseBeyond20WebSocketEvent(evt);
+  }
+  if (
+    eventType
+    && (
+      eventType.includes("deferred")
+      || eventType.includes("pending")
+      || (!eventType.includes("dice/roll") && !eventType.includes("roll/fulfilled"))
+    )
+  ) {
     return [];
   }
 
   const data = evt.data || evt;
-  const rolls = Array.isArray(data.rolls) ? data.rolls : [];
+  let rolls = Array.isArray(data.rolls) ? data.rolls : [];
   if (rolls.length === 0) return [];
+
+  // Beyond20 digital-dice overrides (`__b20Override__: true`) split "Roll Twice" / Adv / Disadv
+  // d20s into two separate 1d20 entries inside `data.rolls`; merge them into one dual-d20 roll.
+  if (data.__b20Override__ && rolls.length >= 2) {
+    const isSingleD20Roll = (entry) => {
+      const sets = Array.isArray(entry?.diceNotation?.set) ? entry.diceNotation.set : [];
+      if (sets.length !== 1) return false;
+      const s = sets[0];
+      const dieStr = String(s?.dieType || "").toLowerCase();
+      return dieStr === "d20" && Array.isArray(s?.dice) && s.dice.length === 1;
+    };
+    if (
+      isSingleD20Roll(rolls[0])
+      && isSingleD20Roll(rolls[1])
+      && normalizeDdbRollType(rolls[0].rollType) === normalizeDdbRollType(rolls[1].rollType)
+    ) {
+      const r0 = rolls[0];
+      const r1 = rolls[1];
+      const d0 = r0.diceNotation.set[0].dice[0];
+      const d1 = r1.diceNotation.set[0].dice[0];
+      const val0 = Number(d0?.dieValue ?? d0?.value ?? 0);
+      const mergedRoll = {
+        ...r0,
+        diceNotation: {
+          ...(r0.diceNotation || {}),
+          set: [{
+            count: 2,
+            dieType: "d20",
+            operation: 0,
+            dice: [d0, d1]
+          }]
+        },
+        result: {
+          ...(r0.result || {}),
+          values: [val0]
+        }
+      };
+      rolls = [mergedRoll, ...rolls.slice(2)];
+    }
+  }
 
   const characterName = evt.context?.name || data.context?.name || data.characterName || "D&D Beyond Character";
   const ddbCharacterId = String(evt.entityId || data.entityId || "");
@@ -95,7 +225,10 @@ export function parseDdbGameLogEvent(rawEvent) {
 
   return rolls.map((r, index) => {
     let rollType = normalizeDdbRollType(r.rollType);
-    const cleanAction = String(actionName || "").toLowerCase().trim();
+    const cleanAction = String(actionName || "")
+      .replace(/\s*\([+-]?\d+\)\s*$/g, "")
+      .toLowerCase()
+      .trim();
     if (rollType === "check" && DND5E_SKILLS.has(cleanAction)) {
       rollType = "skill";
     } else if (cleanAction.includes("saving throw") || cleanAction.endsWith(" save")) {
@@ -185,6 +318,7 @@ export function parseDdbGameLogEvent(rawEvent) {
     return {
       id: `${rawId}-${index}`,
       messageId: rawId,
+      source: "ddb",
       characterName,
       ddbCharacterId,
       actionName,
@@ -202,6 +336,822 @@ export function parseDdbGameLogEvent(rawEvent) {
       damageType: r.damageType || "",
       ...(rawCastLevel ? { castLevel: rawCastLevel } : {})
     };
+  });
+}
+
+function extractBeyond20WebSocketCells(renderHtml) {
+  const cells = [];
+  const html = String(renderHtml || "");
+  if (!html) return cells;
+
+  // Match each .beyond20-roll-cell or .beyond20-roll-damage (or fall back to the whole renderHtml if no cells)
+  const cellMatches = [];
+  const cellStartRegex = /<div\b[^>]*class=(["'])[^"']*\b(?:beyond20-roll-cell|beyond20-roll-damage)\b[^"']*\1[^>]*>/gi;
+  let m;
+  let prevEnd = 0;
+  while ((m = cellStartRegex.exec(html)) !== null) {
+    const startIdx = m.index;
+    let depth = 0;
+    let endIdx = html.length;
+    const tagRegex = /<\/?div\b[^>]*>/gi;
+    tagRegex.lastIndex = startIdx;
+    let tm;
+    while ((tm = tagRegex.exec(html)) !== null) {
+      if (tm[0].startsWith("</")) {
+        depth -= 1;
+        if (depth <= 0) {
+          endIdx = tm.index + tm[0].length;
+          break;
+        }
+      } else {
+        depth += 1;
+      }
+    }
+    cellMatches.push({
+      seg: html.slice(startIdx, endIdx),
+      prefix: html.slice(prevEnd, startIdx)
+    });
+    prevEnd = endIdx;
+    cellStartRegex.lastIndex = endIdx;
+  }
+
+  const segments = cellMatches.length > 0 ? cellMatches : [{ seg: html, prefix: "" }];
+  for (const { seg, prefix } of segments) {
+    const totalMatch = seg.match(/class=(["'])[^"']*\bbeyond20-roll-value\b[^"']*\1[^>]*>([\s\S]*?)<\/(?:span|div)>/i);
+    const formulaMatch = seg.match(/class=(["'])[^"']*\bbeyond20-roll-formula\b[^"']*\1[^>]*>([\s\S]*?)<\/(?:div|span)>/i);
+    const labelMatch = seg.match(/class=(["'])[^"']*\bbeyond20-roll-(?:label|title|name|type|damage-type)\b[^"']*\1[^>]*>([\s\S]*?)<\/[^>]+>/i)
+      || seg.match(/<b\b[^>]*>([\s\S]*?)<\/b>/i)
+      || prefix.match(/class=(["'])[^"']*\bbeyond20-(?:roll-name|roll-title|sub-header|roll-label)\b[^"']*\1[^>]*>([\s\S]*?)<\/[^>]+>/i);
+
+    const dice = [];
+    const diceGroupRegex = /class=(["'])(?:[^"']*\s)?beyond20-roll-dice(?:\s[^"']*)?\1[^>]*>([\s\S]*?)(?=<div\b[^>]*class=(["'])(?:[^"']*\s)?beyond20-roll-dice(?:\s[^"']*)?\3|$)/gi;
+    let gm;
+    while ((gm = diceGroupRegex.exec(seg)) !== null) {
+      const groupHtml = gm[2];
+      const dfMatch = groupHtml.match(/class=(["'])[^"']*\bbeyond20-roll-dice-formula\b[^"']*\1[^>]*>([\s\S]*?)<\/(?:div|span)>/i);
+      const dfText = dfMatch ? stripHtmlTags(dfMatch[2]) : "";
+      const dieMatch = dfText.match(/d(\d+)/i);
+      const dieType = dieMatch ? `d${dieMatch[1]}` : "d20";
+
+      const resRegex = /<span\b([^>]*)class=(["'])([^"']*\bbeyond20-roll-die-result\b[^"']*)\2([^>]*)>([\s\S]*?)<\/span>/gi;
+      let rm;
+      while ((rm = resRegex.exec(groupHtml)) !== null) {
+        const cls = rm[3] || "";
+        const val = Number(stripHtmlTags(rm[5]));
+        if (!Number.isFinite(val)) continue;
+        const dropped = /\b(?:discarded|dropped)\b/i.test(cls);
+        dice.push({ dieType, dieValue: val, dropped });
+      }
+    }
+
+    const attrTexts = [];
+    const attrRegex = /\b(?:data-original-title|title|aria-label)=(["'])([^"']+)\1/gi;
+    let am;
+    while ((am = attrRegex.exec(seg)) !== null) {
+      attrTexts.push(am[2]);
+    }
+
+    const total = totalMatch ? Number(stripHtmlTags(totalMatch[2])) : NaN;
+    const formula = formulaMatch ? stripHtmlTags(formulaMatch[2]) : "";
+    const label = labelMatch ? stripHtmlTags(labelMatch[2] ?? labelMatch[1]) : "";
+    const damageType = extractBeyond20DamageType(`${label} ${formula}`)
+      || extractBeyond20DamageType(stripHtmlTags(seg))
+      || extractBeyond20DamageType(attrTexts.join(" "));
+    if (dice.length > 0 || Number.isFinite(total)) {
+      cells.push({ total, formula, dice, label, damageType });
+    }
+  }
+
+  return cells;
+}
+
+const BEYOND20_ABILITY_MAP = {
+  str: "str", strength: "str",
+  dex: "dex", dexterity: "dex",
+  con: "con", constitution: "con",
+  int: "int", intelligence: "int",
+  wis: "wis", wisdom: "wis",
+  cha: "cha", charisma: "cha"
+};
+
+function extractBeyond20DamageType(text, req = {}) {
+  const findInText = (raw) => {
+    const str = String(raw || "").toLowerCase();
+    if (!str) return "";
+    for (const dmgType of DND5E_DAMAGE_TYPES) {
+      const regex = new RegExp(`\\b${dmgType}\\b`, "i");
+      if (regex.test(str)) return dmgType;
+    }
+    return "";
+  };
+
+  const explicit = String(
+    req?.["damage-type"]
+    ?? req?.damageType
+    ?? ""
+  ).toLowerCase().trim();
+  if (explicit && DND5E_DAMAGE_TYPES.has(explicit)) return explicit;
+
+  const listCandidates = [
+    req?.["damage-types"],
+    req?.damageTypes,
+    req?.damages
+  ];
+  for (const cand of listCandidates) {
+    if (Array.isArray(cand)) {
+      for (const entry of cand) {
+        const val = Array.isArray(entry) ? entry.join(" ") : (typeof entry === "object" && entry ? `${entry.type || ""} ${entry.damageType || ""}` : String(entry || ""));
+        const found = findInText(val);
+        if (found) return found;
+      }
+    } else if (typeof cand === "string") {
+      const found = findInText(cand);
+      if (found) return found;
+    }
+  }
+
+  const subtitleFound = findInText(`${req?.subtitle || ""} ${req?.name || ""} ${req?.title || ""}`);
+  if (subtitleFound) return subtitleFound;
+
+  return findInText(text);
+}
+
+function extractBeyond20SaveInfo(req = {}, htmlContent = "") {
+  let saveDC = Number(req?.["save-dc"] ?? req?.saveDC ?? req?.dc ?? req?.spell?.dc ?? 0) || null;
+  const rawAbil = String(req?.["save-ability"] ?? req?.saveAbility ?? req?.ability ?? req?.save ?? "").toLowerCase().trim();
+  let saveAbility = BEYOND20_ABILITY_MAP[rawAbil] || "";
+
+  const plain = stripHtmlTags(htmlContent);
+  if (plain) {
+    if (!saveDC || !saveAbility) {
+      const dcFirst = plain.match(/\bDC\s*(\d+)\s+(str(?:ength)?|dex(?:terity)?|con(?:stitution)?|int(?:elligence)?|wis(?:dom)?|cha(?:risma)?)\b/i);
+      if (dcFirst) {
+        if (!saveDC) saveDC = Number(dcFirst[1]) || null;
+        if (!saveAbility) saveAbility = BEYOND20_ABILITY_MAP[dcFirst[2].toLowerCase()] || "";
+      }
+    }
+    if (!saveDC || !saveAbility) {
+      const abilFirst = plain.match(/\b(str(?:ength)?|dex(?:terity)?|con(?:stitution)?|int(?:elligence)?|wis(?:dom)?|cha(?:risma)?)\s+(?:saving\s+throw|save)\s*(?:\(\s*)?DC\s*(\d+)/i);
+      if (abilFirst) {
+        if (!saveAbility) saveAbility = BEYOND20_ABILITY_MAP[abilFirst[1].toLowerCase()] || "";
+        if (!saveDC) saveDC = Number(abilFirst[2]) || null;
+      }
+    }
+    if (!saveDC) {
+      const dcOnly = plain.match(/\bDC\s*(\d+)\b/i);
+      if (dcOnly) saveDC = Number(dcOnly[1]) || null;
+    }
+  }
+
+  return {
+    ...(saveDC ? { saveDC } : {}),
+    ...(saveAbility ? { saveAbility } : {})
+  };
+}
+
+function mergeBeyond20AttackAndDamage(results) {
+  if (!Array.isArray(results) || results.length < 2) return results;
+  if (results[0]?.rollType !== "attack") return results;
+  const trailing = results.slice(1);
+  if (!trailing.every((r) => r?.rollType === "damage")) return results;
+
+  const normalTrailing = trailing.filter((r) => !r?.isCritDamage);
+  const dmgPool = normalTrailing.length > 0 ? normalTrailing : trailing;
+
+  const roundClean = (n) => (Number.isFinite(n) ? Math.round(n * 100) / 100 : n);
+  const combinedDice = dmgPool.flatMap((d) => Array.isArray(d.dice) ? d.dice : []);
+  const totalSum = roundClean(dmgPool.reduce((sum, d) => sum + (Number(d.total) || 0), 0));
+  const modSum = roundClean(dmgPool.reduce((sum, d) => sum + (Number(d.modifier) || 0), 0));
+  const formula = dmgPool.map((d) => d.formula).filter(Boolean).join(" + ");
+  const primaryDamageType = dmgPool.find((d) => d.damageType)?.damageType || "";
+
+  const mergedAttack = {
+    ...results[0],
+    pairedDamage: {
+      dice: combinedDice,
+      total: totalSum,
+      formula,
+      modifier: modSum,
+      ...(primaryDamageType ? { damageType: primaryDamageType } : {}),
+      components: dmgPool.map((d) => ({
+        dice: d.dice || [],
+        total: d.total,
+        formula: d.formula,
+        modifier: d.modifier,
+        damageType: d.damageType || ""
+      }))
+    }
+  };
+  return [mergedAttack];
+}
+
+/**
+ * Parses a Beyond20 `custom/beyond20/roll` event received over the D&D Beyond Game Log WebSocket.
+ * @param {object} evt
+ * @returns {Array<object>}
+ */
+export function parseBeyond20WebSocketEvent(evt) {
+  if (!evt || typeof evt !== "object") return [];
+  const data = evt.data || {};
+  const req = data.request || {};
+  const renderHtml = String(data.render || "");
+  const rawId = String(evt.id || `b20-ws-${Date.now()}`);
+
+  const characterName = String(
+    req.character?.name
+    || evt.context?.name
+    || "D&D Beyond Character"
+  ).trim();
+  const ddbCharacterId = String(evt.entityId || req.character?.id || "");
+  const rawTitle = String(
+    req.name
+    || req.spell?.name
+    || req.weapon?.name
+    || req.title
+    || ""
+  ).trim();
+  const actionName = cleanBeyond20ActionName(rawTitle || "Roll");
+  const rawMod = Number(req.modifier);
+  const castLevel = Number(req.castLevel ?? req.spellLevel ?? req["spell-level"] ?? req.level ?? 0) || null;
+  const saveMeta = extractBeyond20SaveInfo(req, renderHtml);
+
+  // Map Beyond20 advantage enum: 3 = Advantage, 4 = Disadvantage, 6 = Super Advantage, 7 = Super Disadvantage, 0/1 = Normal/Double
+  const advCode = Number(req.advantage);
+  let rollMode = "normal";
+  if (advCode === 3 || advCode === 6 || req.advantage === true) rollMode = "advantage";
+  else if (advCode === 4 || advCode === 7) rollMode = "disadvantage";
+
+  let cells = extractBeyond20WebSocketCells(renderHtml);
+  if (cells.length === 0 && renderHtml) {
+    cells = extractBeyond20HtmlBlocks(renderHtml).map((b) => ({
+      total: b.total,
+      formula: b.formula,
+      dice: b.dice,
+      label: b.label || "",
+      damageType: b.damageType || ""
+    }));
+  }
+  if (cells.length === 0) return [];
+
+  // Check if leading cells are d20 rolls for the primary test (Beyond20 "Roll Twice" / Advantage / Disadvantage)
+  const isPureD20Cell = (c) => c.dice.length >= 1 && c.dice.every((d) => d.dieType === "d20");
+  let leadingD20Count = 0;
+  if (cells.length >= 2 && isPureD20Cell(cells[0]) && isPureD20Cell(cells[1])) {
+    leadingD20Count = 2;
+    while (leadingD20Count < cells.length && isPureD20Cell(cells[leadingD20Count])) {
+      leadingD20Count += 1;
+    }
+  }
+
+  const results = [];
+  if (leadingD20Count >= 2) {
+    const d20Cells = cells.slice(0, leadingD20Count);
+    const d20List = d20Cells.flatMap((c) => c.dice.map((d) => d.dieValue));
+    const keptVal = rollMode === "disadvantage"
+      ? Math.min(...d20List)
+      : (rollMode === "advantage" ? Math.max(...d20List) : d20List[0]);
+    let keptIdx = d20Cells.findIndex((c) => c.dice.some((d) => d.dieValue === keptVal));
+    if (keptIdx < 0) keptIdx = 0;
+
+    const keptCell = d20Cells[keptIdx];
+    const mod = Number.isFinite(rawMod)
+      ? rawMod
+      : (Number.isFinite(keptCell.total) ? keptCell.total - keptVal : 0);
+    const combinedDice = d20List.map((val, idx) => ({
+      dieType: "d20",
+      dieValue: val,
+      dropped: rollMode === "normal" ? idx !== 0 : idx !== d20List.indexOf(keptVal)
+    }));
+
+    const rollType = inferBeyond20RollType(req.type || "", actionName, true, req);
+    results.push(finalizeBeyond20Roll({
+      id: `${rawId}-0`,
+      messageId: rawId,
+      characterName,
+      ddbCharacterId,
+      actionName,
+      rollType,
+      rollMode,
+      dice: combinedDice,
+      total: Number.isFinite(keptCell.total) ? keptCell.total : keptVal + mod,
+      formula: keptCell.formula || req.roll || "1d20",
+      modifier: mod,
+      damageType: extractBeyond20DamageType("", req),
+      castLevel
+    }));
+  }
+
+  const remainingStart = leadingD20Count >= 2 ? leadingD20Count : 0;
+  for (let i = remainingStart; i < cells.length; i += 1) {
+    const cell = cells[i];
+    const hasD20 = cell.dice.length > 0
+      ? cell.dice.some((d) => d.dieType === "d20")
+      : /\bd20\b/i.test(cell.formula || req.roll || "");
+    const cellTypeHint = (i > 0 && !hasD20) ? "damage" : (req.type || "");
+    const rollType = inferBeyond20RollType(cell.label || cellTypeHint, actionName, hasD20, req);
+    const mod = (i === 0 && Number.isFinite(rawMod)) ? rawMod : undefined;
+    const damageType = cell.damageType || extractBeyond20DamageType(`${cell.label || ""} ${cell.formula || ""}`, req);
+    results.push(finalizeBeyond20Roll({
+      id: `${rawId}-${i}`,
+      messageId: rawId,
+      characterName,
+      ddbCharacterId,
+      actionName,
+      rollType,
+      rollMode,
+      dice: cell.dice,
+      total: cell.total,
+      formula: cell.formula || req.roll || "1d20",
+      modifier: mod,
+      damageType,
+      castLevel,
+      isCritDamage: /\bcrit(?:ical)?\b/i.test(cell.label || ""),
+      ...(rollType === "damage" ? saveMeta : {})
+    }));
+  }
+
+  return mergeBeyond20AttackAndDamage(results);
+}
+
+function stripHtmlTags(html) {
+  return String(html || "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function inferBeyond20RollType(rawLabel, actionName, hasD20, flags = {}) {
+  const label = String(rawLabel || "").toLowerCase().trim();
+  const action = String(actionName || "").toLowerCase().trim();
+  const flagType = String(flags.type || flags.rollType || flags.request?.type || "").toLowerCase().trim();
+  const combined = `${flagType} ${label} ${action}`.trim();
+
+  if (/\bheal(?:ing)?\b/.test(label) || /\bheal(?:ing)?\b/.test(flagType)) return "heal";
+  if (/\b(?:damage|dmg|crit(?:ical)?\s*damage)\b/.test(label) || /\bdamage\b/.test(flagType)) return "damage";
+  if (/\b(?:to\s*hit|attack)\b/.test(label) || /\battack\b/.test(flagType)) {
+    return hasD20 ? "attack" : "damage";
+  }
+  if (/\binitiative\b/.test(combined)) return "initiative";
+  if (/\b(?:saving\s*throw|death-save|save)\b/.test(combined)) return "save";
+  if (DND5E_SKILLS.has(action) || DND5E_SKILLS.has(label) || /\bskill\b/.test(combined)) return "skill";
+  if (flagType === "ability" || /\b(?:ability\s*check|check)\b/.test(combined)) return "check";
+  if (flagType === "custom") return hasD20 ? "other" : "damage";
+  if (/\bspell\b/.test(flagType) && hasD20) return "attack";
+  if (hasD20 && action && !["roll", "manual roll", "dice roll", "custom roll"].includes(action)) {
+    return "attack";
+  }
+  return hasD20 ? "other" : "damage";
+}
+
+function cleanBeyond20ActionName(rawTitle) {
+  let cleaned = String(rawTitle || "").trim();
+  let prev;
+  do {
+    prev = cleaned;
+    cleaned = cleaned
+      .replace(/\s*\((?:attack|to\s*hit|damage|healing|heal|save|saving\s*throw|check|skill|initiative|advantage|disadvantage|normal|crit|critical)\)\s*$/i, "")
+      .replace(/\s*\((?:2-handed|two-handed|one-handed|versatile|ranged|melee)\)\s*$/i, "")
+      .replace(/\s*\([+-]\d+\)\s*$/i, "")
+      .replace(/\s*-\s*(?:to\s*hit|attack|damage|healing|2-handed|two-handed|one-handed|versatile)\s*$/i, "")
+      .trim();
+  } while (cleaned !== prev);
+  return cleaned || "Roll";
+}
+
+function normalizeCrossSourceActionKey(actionName) {
+  return cleanBeyond20ActionName(actionName)
+    .replace(/\s*\([^)]*\)\s*$/g, "")
+    .replace(/\s*:\s*(?:attack|to\s*hit|damage|healing|heal|save|saving\s*throw|check)\s*$/i, "")
+    .replace(/\s+(?:saving\s*throw|save|check|attack|damage)\s*$/i, "")
+    .toLowerCase()
+    .replace(/[\s\-_']/g, "") || "roll";
+}
+
+function buildCrossSourceKeys(roll, actor = null) {
+  const charKeys = new Set();
+  if (actor?.id) charKeys.add(`actor:${String(actor.id).trim().toLowerCase()}`);
+  if (roll?.ddbCharacterId) charKeys.add(`ddb:${String(roll.ddbCharacterId).trim().toLowerCase()}`);
+  if (roll?.characterName) {
+    const normName = String(roll.characterName).replace(/[\u2018\u2019]/g, "'").trim().toLowerCase();
+    if (normName) charKeys.add(`name:${normName}`);
+  }
+  if (charKeys.size === 0) charKeys.add("unknown");
+
+  const actionKey = normalizeCrossSourceActionKey(roll?.actionName);
+  const rawType = String(roll?.rollType || "roll").toLowerCase();
+  const typeGroup = (rawType === "attack" || rawType === "spell")
+    ? "attack"
+    : (rawType === "damage" || rawType === "heal")
+      ? rawType
+      : "d20";
+  const suffixes = new Set([typeGroup]);
+  if (Number.isFinite(Number(roll?.total))) suffixes.add(String(Number(roll.total)));
+  if (roll?.pairedDamage && Number.isFinite(Number(roll.pairedDamage.total))) {
+    suffixes.add(String(Number(roll.pairedDamage.total)));
+  }
+
+  const keys = [];
+  for (const ck of charKeys) {
+    for (const suf of suffixes) {
+      keys.push(`${ck}_${actionKey}_${suf}`);
+    }
+    if (Number.isFinite(Number(roll?.total))) {
+      const numTotal = Number(roll.total);
+      keys.push(`${ck}_any_${numTotal}`);
+      const truncTotal = Math.trunc(numTotal);
+      if (truncTotal !== numTotal) {
+        keys.push(`${ck}_any_${truncTotal}`);
+      }
+    }
+  }
+  return keys;
+}
+
+function hasRecentMatchingChatMessage(roll, actor = null, dedupeKeys = null, windowMs = 10000) {
+  const msgs = (typeof game !== "undefined" && game.messages)
+    ? (Array.isArray(game.messages.contents) ? game.messages.contents : Array.from(game.messages.values?.() || []))
+    : [];
+  if (msgs.length === 0) return false;
+
+  const keys = dedupeKeys || buildCrossSourceKeys(roll, actor);
+  const keySet = new Set(keys);
+  const now = Date.now();
+  const actionKey = normalizeCrossSourceActionKey(roll?.actionName);
+  const rollTotal = Number(roll?.total);
+  const recentSlice = msgs.slice(-15);
+
+  const curSource = roll?.source || "ddb";
+  const curMessageId = String(roll?.id || roll?.messageId || "");
+
+  for (let i = recentSlice.length - 1; i >= 0; i -= 1) {
+    const msg = recentSlice[i];
+    if (!msg) continue;
+    const ts = Number(msg.timestamp || 0);
+    if (ts > 0 && (now - ts) > windowMs) continue;
+
+    const modFlags = msg.flags?.[MODULE_ID];
+    const msgKeys = modFlags?.ddbDedupeKeys;
+    const msgSource = modFlags?.ddbSource || "";
+    const msgMessageId = String(modFlags?.ddbMessageId || "");
+
+    if (Array.isArray(msgKeys) && msgKeys.some((k) => keySet.has(k))) {
+      // Cross-source echoes are suppressed within 10s; same-source rolls are only suppressed on identical roll/message ID
+      if (!msgSource || msgSource !== curSource || (curMessageId && msgMessageId && curMessageId === msgMessageId)) {
+        return true;
+      }
+      continue;
+    }
+
+    // Also match hijacked Cheap Dice cards (which don't carry ddbDedupeKeys)
+    if (!modFlags?.ddbRoll && actor?.id && msg.speaker?.actor === actor.id && Number.isFinite(rollTotal)) {
+      const msgContentNorm = String(msg.content || "").replace(/<[^>]*>/g, " ").toLowerCase().replace(/[\s\-_']/g, "");
+      const hasAction = actionKey && msgContentNorm.includes(actionKey);
+      const hasTotal = Array.isArray(msg.rolls) && msg.rolls.some((r) => Number(r?.total) === rollTotal);
+      if (hasAction && hasTotal) return true;
+    }
+  }
+  return false;
+}
+
+function detectBeyond20RollMode(textHint, formula, d20Values, flags = {}) {
+  const hint = `${String(textHint || "")} ${String(flags.rollMode || flags.rollKind || "")}`.toLowerCase();
+  const f = String(formula || "").toLowerCase();
+  const advFlag = flags.advantage;
+  if (advFlag === 1 || advFlag === true || hint.includes("advantage") && !hint.includes("disadvantage") || /\b\d*d20k?h\d*\b/.test(f)) {
+    return "advantage";
+  }
+  if (advFlag === 2 || hint.includes("disadvantage") || /\b\d*d20k?l\d*\b/.test(f)) {
+    return "disadvantage";
+  }
+  if (d20Values.length > 1) return "advantage";
+  return "normal";
+}
+
+function finalizeBeyond20Roll({
+  id,
+  messageId,
+  characterName,
+  ddbCharacterId,
+  actionName,
+  rollType,
+  rollMode,
+  dice,
+  total,
+  formula,
+  modifier,
+  damageType = "",
+  castLevel,
+  saveDC,
+  saveAbility,
+  isCritDamage = false
+}) {
+  const d20Values = dice.filter((d) => d.dieType === "d20").map((d) => d.dieValue);
+  const keptD20Dice = dice.filter((d) => d.dieType === "d20" && !d.dropped);
+  const keptD20 = keptD20Dice.length > 0
+    ? keptD20Dice[0].dieValue
+    : (d20Values.length > 0
+      ? (rollMode === "disadvantage" ? Math.min(...d20Values) : Math.max(...d20Values))
+      : null);
+
+  let keptUsed = false;
+  const annotatedDice = dice.map((d) => {
+    if (d.dieType === "d20" && d20Values.length > 1 && keptD20 !== null) {
+      if (d.dropped) return d;
+      if (!keptUsed && d.dieValue === keptD20) {
+        keptUsed = true;
+        return { ...d, dropped: false };
+      }
+      return { ...d, dropped: true };
+    }
+    return { ...d, dropped: Boolean(d.dropped) };
+  });
+
+  const keptDiceSum = annotatedDice
+    .filter((d) => !d.dropped)
+    .reduce((sum, d) => sum + d.dieValue, 0);
+  const roundClean = (n) => (Number.isFinite(n) ? Math.round(n * 100) / 100 : n);
+  const rawResolvedTotal = Number.isFinite(Number(total)) ? Number(total) : keptDiceSum + (Number(modifier) || 0);
+  const resolvedTotal = roundClean(rawResolvedTotal);
+  const rawResolvedMod = Number.isFinite(Number(modifier))
+    ? Number(modifier)
+    : (annotatedDice.length > 0 ? resolvedTotal - keptDiceSum : 0);
+  const resolvedMod = roundClean(rawResolvedMod);
+
+  const isCrit = rollType === "attack" && keptD20 === 20;
+  const isFumble = rollType === "attack" && keptD20 === 1;
+
+  return {
+    id,
+    messageId,
+    source: "beyond20",
+    characterName,
+    ddbCharacterId,
+    actionName,
+    rollType,
+    rollMode,
+    dice: annotatedDice,
+    d20Values,
+    keptD20,
+    isCrit,
+    isFumble,
+    modifier: resolvedMod,
+    total: resolvedTotal,
+    formula: formula || "1d20",
+    resultText: `${resolvedTotal}`,
+    damageType: damageType || "",
+    ...(castLevel ? { castLevel } : {}),
+    ...(saveDC ? { saveDC } : {}),
+    ...(saveAbility ? { saveAbility } : {}),
+    ...(isCritDamage ? { isCritDamage: true } : {})
+  };
+}
+
+function extractBeyond20HtmlBlocks(content) {
+  const blocks = [];
+  const diceRollRegex = /<div\b[^>]*class="[^"]*\bdice-roll\b[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/gi;
+  // Simpler balanced scan for .dice-roll blocks
+  const startRegex = /<div\b[^>]*class="[^"]*\bdice-roll\b[^"]*"[^>]*>/gi;
+  let match;
+  while ((match = startRegex.exec(content)) !== null) {
+    const startIdx = match.index;
+    let depth = 0;
+    let endIdx = content.length;
+    const tagRegex = /<\/?div\b[^>]*>/gi;
+    tagRegex.lastIndex = startIdx;
+    let tagMatch;
+    while ((tagMatch = tagRegex.exec(content)) !== null) {
+      if (tagMatch[0].startsWith("</")) {
+        depth -= 1;
+        if (depth <= 0) {
+          endIdx = tagMatch.index + tagMatch[0].length;
+          break;
+        }
+      } else {
+        depth += 1;
+      }
+    }
+    const blockHtml = content.slice(startIdx, endIdx);
+    const prefixHtml = content.slice(Math.max(0, startIdx - 280), startIdx);
+    const formulaMatch = blockHtml.match(/class="[^"]*\bdice-formula\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
+    const totalMatch = blockHtml.match(/class="[^"]*\bdice-total\b[^"]*"[^>]*>([\s\S]*?)<\/h\d>/i)
+      || blockHtml.match(/class="[^"]*\bdice-total\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
+    const labelMatch = prefixHtml.match(/class="[^"]*\bbeyond20-(?:roll-title|sub-header|roll-name|label)\b[^"]*"[^>]*>([\s\S]*?)<\/[^>]+>/i)
+      || prefixHtml.match(/<(?:strong|b|h4|h5)\b[^>]*>([\s\S]*?)<\/(?:strong|b|h4|h5)>/i);
+
+    const dice = [];
+    const dieLiRegex = /<li\b([^>]*)>([\s\S]*?)<\/li>/gi;
+    let liMatch;
+    while ((liMatch = dieLiRegex.exec(blockHtml)) !== null) {
+      const attrs = liMatch[1] || "";
+      const val = Number(stripHtmlTags(liMatch[2]));
+      if (!Number.isFinite(val)) continue;
+      const dieClassMatch = attrs.match(/\bd(\d+)\b/i);
+      const dieType = dieClassMatch ? `d${dieClassMatch[1]}` : "d20";
+      const dropped = /\b(?:discarded|dropped)\b/i.test(attrs);
+      dice.push({ dieType, dieValue: val, dropped });
+    }
+
+    const formula = formulaMatch ? stripHtmlTags(formulaMatch[1]) : "";
+    const total = totalMatch ? Number(stripHtmlTags(totalMatch[1])) : NaN;
+    const label = labelMatch ? stripHtmlTags(labelMatch[1]) : "";
+    const damageType = extractBeyond20DamageType(`${label} ${formula}`);
+    if (dice.length > 0 || Number.isFinite(total)) {
+      blocks.push({ formula, total, dice, label, damageType });
+    }
+    startRegex.lastIndex = endIdx;
+  }
+  void diceRollRegex;
+  return blocks;
+}
+
+/**
+ * Returns true if a Foundry ChatMessage (or preCreateChatMessage data) originated from Beyond20.
+ * @param {object} message
+ * @param {object} [data]
+ * @returns {boolean}
+ */
+export function isBeyond20ChatMessage(message, data = {}) {
+  const flags = message?.flags || data?.flags || {};
+  if (flags?.[MODULE_ID]?.fromBeyond20 || flags?.[MODULE_ID]?.ddbRoll) return false;
+  const content = String(message?.content ?? data?.content ?? "");
+  if (content.includes("cd-chat-card")) return false;
+  return Boolean(flags?.beyond20) || content.includes("beyond20-message") || content.includes("beyond20-");
+}
+
+/**
+ * Pure parser: converts an intercepted Beyond20 Foundry ChatMessage into an array
+ * of normalized Cheap Dice roll objects compatible with `postDdbRollToFoundry`.
+ *
+ * @param {object} message
+ * @param {object} [data]
+ * @returns {Array<object>}
+ */
+export function parseBeyond20ChatMessage(message, data = {}) {
+  if (!isBeyond20ChatMessage(message, data)) return [];
+
+  const flags = message?.flags?.beyond20 || data?.flags?.beyond20 || {};
+  const content = String(message?.content ?? data?.content ?? "");
+  const speaker = message?.speaker || data?.speaker || {};
+
+  const characterName = String(
+    speaker.alias
+    || flags.character
+    || flags.name
+    || "D&D Beyond Character"
+  ).trim();
+  const ddbCharacterId = String(flags.characterId || flags.entityId || "");
+
+  const headerMatch = content.match(/class="[^"]*\bbeyond20-(?:header|roll-title|title)\b[^"]*"[^>]*>([\s\S]*?)<\/[^>]+>/i)
+    || content.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/i)
+    || content.match(/<(?:h3|h4|strong)\b[^>]*>([\s\S]*?)<\/(?:h3|h4|strong)>/i);
+  const rawTitle = String(
+    flags.title
+    || flags.action
+    || flags.request?.name
+    || (headerMatch ? stripHtmlTags(headerMatch[1]) : "")
+    || "Roll"
+  ).trim();
+  const actionName = cleanBeyond20ActionName(rawTitle);
+  const rawCastLevel = Number(flags.castLevel ?? flags.spellLevel ?? flags.level ?? 0) || null;
+  const saveMeta = extractBeyond20SaveInfo(flags.request || flags, content);
+  const messageId = String(message?.id || data?._id || `b20-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+
+  // 1. Prefer Foundry Roll objects when Beyond20 rolls using Foundry's dice engine
+  const rawRolls = Array.isArray(message?.rolls) && message.rolls.length > 0
+    ? message.rolls
+    : (Array.isArray(data?.rolls) ? data.rolls : []);
+
+  if (rawRolls.length > 0) {
+    const parsed = [];
+    for (let i = 0; i < rawRolls.length; i += 1) {
+      let r = rawRolls[i];
+      if (typeof r === "string") {
+        try {
+          r = JSON.parse(r);
+        } catch {
+          r = null;
+        }
+      }
+      if (!r || typeof r !== "object") continue;
+      const dice = [];
+      const terms = Array.isArray(r.terms) ? r.terms : (Array.isArray(r.dice) ? r.dice : []);
+      for (const term of terms) {
+        if (!term || !Array.isArray(term.results)) continue;
+        const faces = Number(term.faces || 20) || 20;
+        const dieType = `d${faces}`;
+        for (const res of term.results) {
+          const val = Number(res?.result);
+          if (!Number.isFinite(val)) continue;
+          const dropped = Boolean(res?.discarded || res?.dropped || res?.active === false);
+          dice.push({ dieType, dieValue: val, dropped });
+        }
+      }
+      const formula = String(r.formula || "");
+      const total = Number(r.total);
+      const d20Values = dice.filter((d) => d.dieType === "d20").map((d) => d.dieValue);
+      const hasD20 = d20Values.length > 0 || /\bd20\b/i.test(formula);
+      const rollMode = detectBeyond20RollMode(rawTitle, formula, d20Values, flags);
+      let rollType = inferBeyond20RollType(rawRolls.length > 1 && i > 0 && !hasD20 ? "damage" : rawTitle, actionName, hasD20, flags);
+      if (rawRolls.length > 1 && i === 0 && hasD20 && rollType === "other") {
+        rollType = "attack";
+      }
+      parsed.push(finalizeBeyond20Roll({
+        id: `${messageId}-${i}`,
+        messageId,
+        characterName,
+        ddbCharacterId,
+        actionName,
+        rollType,
+        rollMode,
+        dice,
+        total,
+        formula,
+        damageType: extractBeyond20DamageType(`${rawTitle} ${formula}`, flags.request || flags),
+        castLevel: rawCastLevel,
+        ...(rollType === "damage" ? saveMeta : {})
+      }));
+    }
+    if (parsed.length > 0) return parsed;
+  }
+
+  // 2. Fallback: parse Beyond20 HTML (.beyond20-roll-cell or .dice-roll blocks) when Beyond20 posts HTML-only cards
+  let blocks = extractBeyond20HtmlBlocks(content);
+  if (blocks.length === 0) {
+    const wsCells = extractBeyond20WebSocketCells(content);
+    if (wsCells.length > 0) {
+      blocks = wsCells.map((c) => ({
+        formula: c.formula,
+        total: c.total,
+        dice: c.dice,
+        label: c.label || "",
+        damageType: c.damageType || ""
+      }));
+    }
+  }
+  if (blocks.length === 0) return [];
+
+  // Combine paired d20 cells when Beyond20 renders Advantage/Disadvantage as two side-by-side 1d20 blocks
+  const advHint = `${rawTitle} ${stripHtmlTags(content)}`.toLowerCase();
+  const isPairedAdvDis = blocks.length === 2
+    && blocks[0].dice.length === 1 && blocks[0].dice[0].dieType === "d20"
+    && blocks[1].dice.length === 1 && blocks[1].dice[0].dieType === "d20"
+    && (advHint.includes("advantage") || advHint.includes("disadvantage"));
+
+  if (isPairedAdvDis) {
+    const mode = advHint.includes("disadvantage") ? "disadvantage" : "advantage";
+    const d1 = blocks[0].dice[0].dieValue;
+    const d2 = blocks[1].dice[0].dieValue;
+    const kept = mode === "disadvantage" ? Math.min(d1, d2) : Math.max(d1, d2);
+    const keptIdx = kept === d1 ? 0 : 1;
+    const keptBlock = blocks[keptIdx];
+    const mod = Number.isFinite(keptBlock.total) ? keptBlock.total - kept : 0;
+    const combinedDice = [
+      { dieType: "d20", dieValue: d1, dropped: keptIdx !== 0 },
+      { dieType: "d20", dieValue: d2, dropped: keptIdx !== 1 }
+    ];
+    const rollType = inferBeyond20RollType(rawTitle, actionName, true, flags);
+    return [finalizeBeyond20Roll({
+      id: `${messageId}-0`,
+      messageId,
+      characterName,
+      ddbCharacterId,
+      actionName,
+      rollType,
+      rollMode: mode,
+      dice: combinedDice,
+      total: Number.isFinite(keptBlock.total) ? keptBlock.total : kept + mod,
+      formula: keptBlock.formula || "2d20",
+      modifier: mod,
+      castLevel: rawCastLevel
+    })];
+  }
+
+  return blocks.map((b, i) => {
+    const d20Values = b.dice.filter((d) => d.dieType === "d20").map((d) => d.dieValue);
+    const hasD20 = d20Values.length > 0 || /\bd20\b/i.test(b.formula);
+    const rollMode = detectBeyond20RollMode(`${rawTitle} ${b.label}`, b.formula, d20Values, flags);
+    const rollType = inferBeyond20RollType(b.label || rawTitle, actionName, hasD20, flags);
+    return finalizeBeyond20Roll({
+      id: `${messageId}-${i}`,
+      messageId,
+      characterName,
+      ddbCharacterId,
+      actionName,
+      rollType,
+      rollMode,
+      dice: b.dice,
+      total: b.total,
+      formula: b.formula,
+      damageType: b.damageType || extractBeyond20DamageType(`${b.label || ""} ${b.formula || ""}`, flags.request || flags),
+      castLevel: rawCastLevel,
+      ...(rollType === "damage" ? saveMeta : {})
+    });
   });
 }
 
@@ -892,7 +1842,8 @@ export function buildDdbSpellSaveCardHtml(parsedRoll, actor, matchingItem, saveI
     ? (typeof sys.activities.values === "function" ? Array.from(sys.activities.values()) : Object.values(sys.activities))
     : [];
   const actWithDmg = activities.find((a) => a?.damage?.parts?.length > 0);
-  const rawDmgType = unwrapDnd5eString(actWithDmg?.damage?.parts?.[0]?.types, "")
+  const rawDmgType = parsedRoll.damageType
+    || unwrapDnd5eString(actWithDmg?.damage?.parts?.[0]?.types, "")
     || unwrapDnd5eString(sys.damage?.parts?.[0]?.[1], "")
     || "fire";
   const typeDisplay = escapeHtml(rawDmgType.toUpperCase());
@@ -1195,49 +2146,32 @@ export function buildDdbCustomChatCardHtml(parsedRoll, actor = null, options = {
   const critClass1 = d20_1 === 20 ? " critical" : d20_1 === 1 ? " fumble" : "";
   const critClass2 = d20_2 === 20 ? " critical" : d20_2 === 1 ? " fumble" : "";
 
-  const rollBox1 = options.rollHtml1 || `
-    <div class="dice-roll">
+  const buildFallbackRollBox = (d20Val, totalVal, critClass) => `
+    <div class="dice-roll" data-action="expandRoll">
       <div class="dice-result">
         <div class="dice-formula">${escapeHtml(parsedRoll.formula)}</div>
-        <div class="dice-tooltip">
-          <section class="tooltip-part">
-            <div class="dice">
-              <header class="part-header flexrow">
-                <span class="part-formula">${escapeHtml(parsedRoll.formula.replace(/\s*[+-].*$/, "").trim())}</span>
-                <span class="part-total">${d20_1}</span>
-              </header>
-              <ol class="dice-rolls">
-                <li class="roll die d20${critClass1}">${d20_1}</li>
-              </ol>
-            </div>
-          </section>
+        <div class="dice-tooltip-collapser">
+          <div class="dice-tooltip">
+            <section class="tooltip-part">
+              <div class="dice">
+                <header class="part-header flexrow">
+                  <span class="part-formula">${escapeHtml(parsedRoll.formula.replace(/\s*[+-].*$/, "").trim())}</span>
+                  <span class="part-total">${d20Val}</span>
+                </header>
+                <ol class="dice-rolls">
+                  <li class="roll die d20${critClass}">${d20Val}</li>
+                </ol>
+              </div>
+            </section>
+          </div>
         </div>
-        <h4 class="dice-total${critClass1}">${total1}</h4>
+        <h4 class="dice-total${critClass}">${totalVal}</h4>
       </div>
     </div>
   `;
 
-  const rollBox2 = options.rollHtml2 || `
-    <div class="dice-roll">
-      <div class="dice-result">
-        <div class="dice-formula">${escapeHtml(parsedRoll.formula)}</div>
-        <div class="dice-tooltip">
-          <section class="tooltip-part">
-            <div class="dice">
-              <header class="part-header flexrow">
-                <span class="part-formula">${escapeHtml(parsedRoll.formula.replace(/\s*[+-].*$/, "").trim())}</span>
-                <span class="part-total">${d20_2}</span>
-              </header>
-              <ol class="dice-rolls">
-                <li class="roll die d20${critClass2}">${d20_2}</li>
-              </ol>
-            </div>
-          </section>
-        </div>
-        <h4 class="dice-total${critClass2}">${total2}</h4>
-      </div>
-    </div>
-  `;
+  const rollBox1 = options.rollHtml1 || buildFallbackRollBox(d20_1, total1, critClass1);
+  const rollBox2 = options.rollHtml2 || buildFallbackRollBox(d20_2, total2, critClass2);
 
   const modDisplay = parsedRoll.modifier > 0
     ? `+ ${parsedRoll.modifier}`
@@ -1569,10 +2503,12 @@ export class DdbGameLogClient {
   }
 
   handleRawMessage(rawData) {
+    ddbDiagnostics.lastPacketAt = Date.now();
+    let parsedPacket = null;
     try {
-      const parsed = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
-      if (parsed?.eventType === "character-sheet/character-update/fulfilled" && (parsed.entityId || parsed.data?.characterId)) {
-        const charId = String(parsed.entityId || parsed.data?.characterId);
+      parsedPacket = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
+      if (parsedPacket?.eventType === "character-sheet/character-update/fulfilled" && (parsedPacket.entityId || parsedPacket.data?.characterId)) {
+        const charId = String(parsedPacket.entityId || parsedPacket.data?.characterId);
         const now = Date.now();
         this._lastAutoSync = this._lastAutoSync || new Map();
         const prev = this._lastAutoSync.get(charId) || 0;
@@ -1595,27 +2531,109 @@ export class DdbGameLogClient {
       }
     } catch (_err) { /* ignore non-JSON or unrelated packets */ }
 
+    const rawRollId = String(parsedPacket?.data?.rollId || parsedPacket?.rollId || "").trim();
+    const packetNow = Date.now();
+    if (rawRollId) {
+      const seenRollIdTime = this.seenMessageIds.get(`rollId:${rawRollId}`);
+      if (seenRollIdTime && (packetNow - seenRollIdTime) < 10000) {
+        return;
+      }
+    }
+
     const parsedRolls = parseDdbGameLogEvent(rawData);
+    if (rawRollId && parsedRolls.length > 0) {
+      this.seenMessageIds.set(`rollId:${rawRollId}`, packetNow);
+    }
     const now = Date.now();
+    this.recentSourceRolls = this.recentSourceRolls || new Map();
     for (const roll of parsedRolls) {
-      const footprint = `${roll.characterName}_${roll.actionName}_${roll.total}_${roll.formula}`;
+      const charKey = String(roll.ddbCharacterId || roll.characterName || "").trim().toLowerCase();
+      const actionKey = normalizeCrossSourceActionKey(roll.actionName);
+      const formulaKey = String(roll.formula || "").replace(/\s+/g, "").toLowerCase();
+      const footprint = `${charKey}_${actionKey}_${roll.total}_${formulaKey}`;
       const lastSeenId = this.seenMessageIds.get(roll.id);
       const lastSeenFootprint = this.seenMessageIds.get(footprint);
       if ((lastSeenId && (now - lastSeenId) < 5000) || (lastSeenFootprint && (now - lastSeenFootprint) < 5000)) {
+        recordDdbDiagnosticRoll(roll, "deduped");
         continue;
       }
-      this.seenMessageIds.set(roll.id, now);
-      this.seenMessageIds.set(footprint, now);
 
-      if (this.seenMessageIds.size > 300) {
-        for (const [k, time] of this.seenMessageIds.entries()) {
-          if (now - time > 15000) this.seenMessageIds.delete(k);
+      // Cross-source deduplication: when "Use D&D Beyond's Digital Dice" is ON, both DDB's native
+      // `dice/roll/fulfilled` and Beyond20's `custom/beyond20/roll` or ChatMessage can fire for the same roll.
+      const matchedActor = (typeof game !== "undefined" && game.actors)
+        ? matchDdbActor(roll.characterName, roll.ddbCharacterId)
+        : null;
+      const sourceKeys = buildCrossSourceKeys(roll, matchedActor);
+      const curSource = roll.source || "ddb";
+      const isCrossDuplicate = sourceKeys.some((sk) => {
+        const prev = this.recentSourceRolls.get(sk) || recentCrossSourceRolls.get(sk);
+        return prev && prev.source !== curSource && (now - prev.time) < 10000;
+      });
+      if (isCrossDuplicate) {
+        recordDdbDiagnosticRoll(roll, "deduped");
+        continue;
+      }
+
+      this._pendingBeyond20Timers = this._pendingBeyond20Timers || new Map();
+      const pendingKey = `${charKey}_any_${Math.trunc(Number(roll.total))}`;
+
+      // If DDB's authoritative dice/roll/fulfilled arrives, cancel any deferred generic Beyond20 "Roll" for this character
+      if (curSource === "ddb") {
+        const charPrefix = `${charKey}_any_`;
+        for (const [k, pending] of this._pendingBeyond20Timers.entries()) {
+          if (k === pendingKey || k.startsWith(charPrefix)) {
+            clearTimeout(pending);
+            this._pendingBeyond20Timers.delete(k);
+          }
         }
       }
 
-      if (typeof this.onRollCallback === "function") {
-        this.onRollCallback(roll);
+      const commitAndEmit = () => {
+        const emitNow = Date.now();
+        ddbDiagnostics.sources[curSource === "beyond20" ? "beyond20Ws" : "ddb"] += 1;
+        this.seenMessageIds.set(roll.id, emitNow);
+        this.seenMessageIds.set(footprint, emitNow);
+        for (const sk of sourceKeys) {
+          this.recentSourceRolls.set(sk, { source: curSource, time: emitNow, total: roll.total });
+          recentCrossSourceRolls.set(sk, { source: curSource, time: emitNow, total: roll.total });
+        }
+
+        if (this.seenMessageIds.size > 300) {
+          for (const [k, time] of this.seenMessageIds.entries()) {
+            if (emitNow - time > 15000) this.seenMessageIds.delete(k);
+          }
+        }
+        if (this.recentSourceRolls.size > 300) {
+          for (const [k, entry] of this.recentSourceRolls.entries()) {
+            if (emitNow - entry.time > 15000) this.recentSourceRolls.delete(k);
+          }
+        }
+
+        if (typeof this.onRollCallback === "function") {
+          this.onRollCallback(roll);
+        }
+      };
+
+      // Defer generic Beyond20 "Roll" packets briefly so paired DDB dice/roll/fulfilled packets win
+      if (curSource === "beyond20" && actionKey === "roll" && Number.isFinite(Number(roll.total))) {
+        const existingPending = this._pendingBeyond20Timers.get(pendingKey);
+        if (existingPending) clearTimeout(existingPending);
+        const timer = setTimeout(() => {
+          this._pendingBeyond20Timers.delete(pendingKey);
+          const checkNow = Date.now();
+          const alreadySuperseded = sourceKeys.some((sk) => {
+            const prev = this.recentSourceRolls.get(sk) || recentCrossSourceRolls.get(sk);
+            return prev && prev.source !== curSource && (checkNow - prev.time) < 10000;
+          });
+          if (!alreadySuperseded) {
+            commitAndEmit();
+          }
+        }, 150);
+        this._pendingBeyond20Timers.set(pendingKey, timer);
+        continue;
       }
+
+      commitAndEmit();
     }
   }
 
@@ -1637,6 +2655,7 @@ export class DdbGameLogClient {
 
   scheduleReconnect(config) {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    ddbDiagnostics.reconnects += 1;
     const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelayMs);
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
@@ -1646,6 +2665,12 @@ export class DdbGameLogClient {
 
   disconnect() {
     this.stopHeartbeat();
+    if (this._pendingBeyond20Timers) {
+      for (const timer of this._pendingBeyond20Timers.values()) {
+        clearTimeout(timer);
+      }
+      this._pendingBeyond20Timers.clear();
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -1664,6 +2689,25 @@ export class DdbGameLogClient {
  */
 export async function postDdbRollToFoundry(parsedRoll) {
   const actor = matchDdbActor(parsedRoll.characterName, parsedRoll.ddbCharacterId);
+  const dedupeKeys = buildCrossSourceKeys(parsedRoll, actor);
+  if (hasRecentMatchingChatMessage(parsedRoll, actor, dedupeKeys)) {
+    recordDdbDiagnosticRoll(parsedRoll, "deduped");
+    return null;
+  }
+
+  const activeSocket = (typeof game !== "undefined" && game.modules?.get?.(MODULE_ID)?.api?.socket)
+    || (typeof globalThis !== "undefined" ? globalThis.attackSocket : null);
+  if (activeSocket && typeof activeSocket.executeAsGM === "function") {
+    try {
+      const claimed = await activeSocket.executeAsGM("claimDdbRoll", dedupeKeys, parsedRoll.source || "ddb");
+      if (claimed === false) {
+        recordDdbDiagnosticRoll(parsedRoll, "deduped");
+        return null;
+      }
+    } catch (_err) {
+      // Fall through if GM is unreachable or handler is not registered in test/mock environments
+    }
+  }
 
   let requireImported = false;
   try {
@@ -1680,6 +2724,7 @@ export async function postDdbRollToFoundry(parsedRoll) {
   );
 
   if (requireImported && (!actor || !isImported)) {
+    recordDdbDiagnosticRoll(parsedRoll, "dropped");
     return null;
   }
   const token = actor?.getActiveTokens?.()[0] || null;
@@ -1718,13 +2763,12 @@ export async function postDdbRollToFoundry(parsedRoll) {
     d20_2 = otherIdx !== -1 ? parsedRoll.d20Values[otherIdx] : parsedRoll.d20Values[1];
   }
 
-  const total1 = isSingleRoll ? Number(parsedRoll.total) : (d20_1 + parsedRoll.modifier);
-  const total2 = d20_2 + parsedRoll.modifier;
+  const roundClean = (n) => (Number.isFinite(n) ? Math.round(n * 100) / 100 : n);
+  const total1 = roundClean(isSingleRoll ? Number(parsedRoll.total) : (d20_1 + parsedRoll.modifier));
+  const total2 = roundClean(d20_2 + parsedRoll.modifier);
   const isAttackCrit = parsedRoll.rollType === "attack" && (Boolean(parsedRoll.isCrit) || d20_1 === 20 || d20_2 === 20);
 
   // Hijack DDB attack, spell, heal, and save-spell damage rolls into Dice Stuff's full execution engine if a matching config or quick macro exists
-  const activeSocket = (typeof game !== "undefined" && game.modules?.get?.(MODULE_ID)?.api?.socket)
-    || (typeof globalThis !== "undefined" ? globalThis.attackSocket : null);
   if ((parsedRoll.rollType === "attack" || parsedRoll.rollType === "spell" || parsedRoll.rollType === "damage" || parsedRoll.rollType === "heal") && actor && cleanAction && activeSocket) {
     const quickMacroProfiles = (typeof window !== "undefined" && window.CustomRolls?.getProfileData?.(actor, "quickMacroProfiles"))
       || actor?.getFlag?.("world", "quickMacroProfiles")
@@ -1851,12 +2895,28 @@ export async function postDdbRollToFoundry(parsedRoll) {
         if (Number.isFinite(Number(parsedRoll.total))) {
           hijackConfig.injectedDamageTotal = Number(parsedRoll.total);
         }
+        if (parsedRoll.damageType) {
+          hijackConfig.damageType = parsedRoll.damageType;
+        }
       } else {
         if (Number.isFinite(d20_1) && d20_1 >= 1 && d20_1 <= 20) {
           hijackConfig.injectedD20_1 = d20_1;
         }
         if (parsedRoll.d20Values?.length > 1 && Number.isFinite(d20_2) && d20_2 >= 1 && d20_2 <= 20) {
           hijackConfig.injectedD20_2 = d20_2;
+        }
+        if (parsedRoll.pairedDamage) {
+          if (Array.isArray(parsedRoll.pairedDamage.dice) && parsedRoll.pairedDamage.dice.length > 0) {
+            hijackConfig.injectedDamageDice = parsedRoll.pairedDamage.dice;
+          }
+          if (Number.isFinite(Number(parsedRoll.pairedDamage.total))) {
+            hijackConfig.injectedDamageTotal = Number(parsedRoll.pairedDamage.total);
+          }
+          if (parsedRoll.pairedDamage.damageType) {
+            hijackConfig.damageType = parsedRoll.pairedDamage.damageType;
+          }
+        } else if (parsedRoll.damageType) {
+          hijackConfig.damageType = parsedRoll.damageType;
         }
       }
 
@@ -1873,8 +2933,12 @@ export async function postDdbRollToFoundry(parsedRoll) {
         );
       }
 
-      console.log(`[${MODULE_ID}] Hijacking DDB attack "${parsedRoll.actionName}" -> ${handlerName} (d20: ${d20_1}${hijackConfig.injectedD20_2 ? `, ${hijackConfig.injectedD20_2}` : ""})`);
+      const dmgDiceStr = Array.isArray(hijackConfig.injectedDamageDice) && hijackConfig.injectedDamageDice.length > 0
+        ? hijackConfig.injectedDamageDice.map((d) => d?.dieValue ?? d).join(",")
+        : "none";
+      console.log(`[${MODULE_ID}] Hijacking DDB attack "${parsedRoll.actionName}" -> ${handlerName} (d20: ${d20_1}${hijackConfig.injectedD20_2 ? `, ${hijackConfig.injectedD20_2}` : ""}, dmgType: ${hijackConfig.damageType || "default"}, dmgDice: ${dmgDiceStr}, dmgTotal: ${hijackConfig.injectedDamageTotal ?? "none"})`);
       await activeSocket.executeAsGM(handlerName, hijackConfig, actor.id, rollUserId);
+      recordDdbDiagnosticRoll(parsedRoll, "hijacked");
       return { hijacked: true, handler: handlerName, actorId: actor.id, actionName: parsedRoll.actionName };
     }
   }
@@ -1917,25 +2981,35 @@ export async function postDdbRollToFoundry(parsedRoll) {
     console.warn(`[${MODULE_ID}] Could not render 3D rolls for DDB:`, err);
   }
 
-  if (parsedRoll.rollType === "attack" && matchingItem) {
-    const rawDmgFormula = getItemDamageFormula(matchingItem, actor);
+  if (parsedRoll.rollType === "attack" && (matchingItem || parsedRoll.pairedDamage)) {
+    const pairedDmg = parsedRoll.pairedDamage || null;
+    const rawDmgFormula = pairedDmg?.formula || (matchingItem ? getItemDamageFormula(matchingItem, actor) : "");
     if (rawDmgFormula) {
       try {
-        const abilityKey = resolveItemAbility(matchingItem, actor);
-        const abilityMod = actor?.system?.abilities?.[abilityKey]?.mod ?? 0;
-        const rollData = typeof matchingItem.getRollData === "function"
+        const abilityKey = matchingItem ? resolveItemAbility(matchingItem, actor) : null;
+        const abilityMod = abilityKey ? (actor?.system?.abilities?.[abilityKey]?.mod ?? 0) : (pairedDmg?.modifier ?? 0);
+        const rollData = typeof matchingItem?.getRollData === "function"
           ? matchingItem.getRollData()
           : (typeof actor?.getRollData === "function" ? actor.getRollData() : {});
         if (rollData.mod === undefined) rollData.mod = abilityMod;
 
-        // Evaluate base damage roll
+        // Evaluate base damage roll, then enforce Beyond20's exact dice faces when pairedDamage is present
         const dmgRoll = await new Roll(rawDmgFormula, rollData).evaluate();
+        if (pairedDmg) {
+          injectDiceIntoRoll(dmgRoll, pairedDmg.dice, Number(pairedDmg.total));
+        }
         finalRolls.push(dmgRoll);
 
-        const diceResults = dmgRoll.dice?.flatMap((d) => d.results.map((r) => r.result)) || [];
-        const baseDiceTotal = dmgRoll.dice?.reduce((acc, d) => acc + d.total, 0) || dmgRoll.total;
-        const damageMod = dmgRoll.total - baseDiceTotal;
-        const normalTotal = dmgRoll.total;
+        const diceResults = pairedDmg?.dice?.length
+          ? pairedDmg.dice.filter((d) => !d.dropped).map((d) => Number(d.dieValue))
+          : (dmgRoll.dice?.flatMap((d) => d.results.map((r) => r.result)) || []);
+        const baseDiceTotal = pairedDmg?.dice?.length
+          ? diceResults.reduce((acc, v) => acc + v, 0)
+          : (dmgRoll.dice?.reduce((acc, d) => acc + d.total, 0) || dmgRoll.total);
+        const normalTotal = pairedDmg && Number.isFinite(Number(pairedDmg.total))
+          ? Number(pairedDmg.total)
+          : dmgRoll.total;
+        const damageMod = normalTotal - baseDiceTotal;
 
         let criticalTotal = normalTotal;
         let critBonus = 0;
@@ -1951,8 +3025,9 @@ export async function postDdbRollToFoundry(parsedRoll) {
           }
         } catch (e) {}
 
-        const itemDamageType = matchingItem.system?.damage?.parts?.[0]?.[1]
-          || matchingItem.system?.activities?.values?.()?.next?.()?.value?.damage?.parts?.[0]?.types?.[0]
+        const itemDamageType = pairedDmg?.damageType
+          || unwrapDnd5eString(matchingItem?.system?.damage?.parts?.[0]?.[1], "")
+          || unwrapDnd5eString(matchingItem?.system?.activities?.values?.()?.next?.()?.value?.damage?.parts?.[0]?.types, "")
           || "fire";
 
         damageData = {
@@ -1983,7 +3058,7 @@ export async function postDdbRollToFoundry(parsedRoll) {
 
   if (evaluatedRoll1 && typeof evaluatedRoll1.render === "function") {
     try {
-      rollHtml1 = await evaluatedRoll1.render();
+      rollHtml1 = (await evaluatedRoll1.render()).replace(/\b(dice-tooltip)\s+expanded\b/g, "$1");
       if (critClass1) rollHtml1 = rollHtml1.replace("dice-total", `dice-total${critClass1}`);
     } catch (e) {
       console.warn(`[${MODULE_ID}] Could not render roll 1 HTML:`, e);
@@ -1992,16 +3067,25 @@ export async function postDdbRollToFoundry(parsedRoll) {
 
   if (evaluatedRoll2 && typeof evaluatedRoll2.render === "function") {
     try {
-      rollHtml2 = await evaluatedRoll2.render();
+      rollHtml2 = (await evaluatedRoll2.render()).replace(/\b(dice-tooltip)\s+expanded\b/g, "$1");
       if (critClass2) rollHtml2 = rollHtml2.replace("dice-total", `dice-total${critClass2}`);
     } catch (e) {
       console.warn(`[${MODULE_ID}] Could not render roll 2 HTML:`, e);
     }
   }
 
-  const saveInfo = parsedRoll.rollType === "damage"
+  let saveInfo = parsedRoll.rollType === "damage"
     ? resolveSpellSaveInfo(matchingItem, actor, parsedRoll.actionName)
     : null;
+  if (parsedRoll.rollType === "damage" && (parsedRoll.saveDC || parsedRoll.saveAbility)) {
+    saveInfo = {
+      isSaveSpell: true,
+      saveAbility: parsedRoll.saveAbility || saveInfo?.saveAbility || "dex",
+      saveSuccess: saveInfo?.saveSuccess || "half",
+      spellAbility: saveInfo?.spellAbility || "int",
+      spellDC: parsedRoll.saveDC || saveInfo?.spellDC || 10
+    };
+  }
 
   const content = buildDdbCustomChatCardHtml(parsedRoll, actor, {
     matchingItem,
@@ -2021,13 +3105,27 @@ export async function postDdbRollToFoundry(parsedRoll) {
     ? ChatMessage.getSpeaker({ actor, token })
     : { alias: parsedRoll.characterName };
 
+  if (hasRecentMatchingChatMessage(parsedRoll, actor, dedupeKeys)) {
+    recordDdbDiagnosticRoll(parsedRoll, "deduped");
+    return null;
+  }
+
   await ChatMessage.create({
     user: game.user.id,
     speaker,
     content,
     rolls: finalRolls,
-    sound: CONFIG.sounds?.dice
+    sound: CONFIG.sounds?.dice,
+    flags: {
+      [MODULE_ID]: {
+        ddbRoll: true,
+        ddbSource: parsedRoll.source || "ddb",
+        ddbMessageId: parsedRoll.id || parsedRoll.messageId || "",
+        ddbDedupeKeys: dedupeKeys
+      }
+    }
   });
+  recordDdbDiagnosticRoll(parsedRoll, "fallback");
 }
 
 /**
@@ -2490,6 +3588,11 @@ export function initDdbListener() {
       }
     },
     ingestEvent: (rawEvent) => activeClient.handleRawMessage(rawEvent),
+    isBeyond20Message: (msg, data) => isBeyond20ChatMessage(msg, data),
+    parseBeyond20Message: (msg, data) => parseBeyond20ChatMessage(msg, data),
+    getStats: () => getDdbDiagnosticsStats(),
+    getRecentRolls: (limit = 15) => getRecentDdbRolls(limit),
+    resetStats: () => resetDdbDiagnostics(),
     simulateRoll: (actionName = "Longsword", rollType = "to hit", rollKind = "advantage") => {
       const sampleActor = canvas?.tokens?.controlled?.[0]?.actor || game.actors?.contents?.[0];
       const d1 = Math.floor(Math.random() * 20) + 1;
@@ -2561,6 +3664,50 @@ export function initDdbListener() {
         await item.use();
       }
     });
+  });
+
+  // Intercept Beyond20 ChatMessages (when D&D Beyond Digital Dice is off or Beyond20 echoes a digital-dice roll) and route into DDB pipeline
+  Hooks.on("preCreateChatMessage", (message, data, options, userId) => {
+    if (userId && game?.user?.id && userId !== game.user.id) return;
+    if (!isBeyond20ChatMessage(message, data)) return;
+    const parsedRolls = parseBeyond20ChatMessage(message, data);
+    const hasRawRolls = (Array.isArray(message?.rolls) && message.rolls.length > 0)
+      || (Array.isArray(data?.rolls) && data.rolls.length > 0);
+    if (!parsedRolls || parsedRolls.length === 0) {
+      if (hasRawRolls) return false;
+      return;
+    }
+
+    const rollsToPost = mergeBeyond20AttackAndDamage(parsedRolls);
+
+    const now = Date.now();
+    ddbDiagnostics.lastPacketAt = now;
+    Promise.resolve().then(async () => {
+      for (const parsedRoll of rollsToPost) {
+        const actor = (typeof game !== "undefined" && game.actors)
+          ? matchDdbActor(parsedRoll.characterName, parsedRoll.ddbCharacterId)
+          : null;
+        const sourceKeys = buildCrossSourceKeys(parsedRoll, actor);
+        const isCrossDuplicate = sourceKeys.some((sk) => {
+          const prev = recentCrossSourceRolls.get(sk);
+          return prev && prev.source !== "beyond20-chat" && (now - prev.time) < 10000;
+        });
+        if (isCrossDuplicate || hasRecentMatchingChatMessage(parsedRoll, actor, sourceKeys)) {
+          recordDdbDiagnosticRoll(parsedRoll, "deduped", "beyond20Chat");
+          continue;
+        }
+        ddbDiagnostics.sources.beyond20Chat += 1;
+        for (const sk of sourceKeys) {
+          recentCrossSourceRolls.set(sk, { source: "beyond20-chat", time: now, total: parsedRoll.total });
+        }
+        try {
+          await postDdbRollToFoundry(parsedRoll);
+        } catch (err) {
+          console.error(`[${MODULE_ID}] Failed to post intercepted Beyond20 roll:`, err);
+        }
+      }
+    });
+    return false;
   });
 
   Hooks.once("ready", () => {
