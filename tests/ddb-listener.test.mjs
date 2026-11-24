@@ -1773,6 +1773,42 @@ describe("D&D Beyond Game Log Listener", () => {
     assert.equal(parsed[1].total, 10);
   });
 
+  it("parseBeyond20ChatMessage merges multiple leading d20 rawRolls (Roll Twice / Adv) with trailing damage", () => {
+    const msg = {
+      id: "b20-msg-roll-twice",
+      speaker: { alias: "Copy of Roscoe" },
+      flags: { beyond20: { title: "Fire Bolt", type: "spell-attack", advantage: 1, characterId: "998878" } },
+      content: '<div class="beyond20-message"><div class="beyond20-header">Fire Bolt</div></div>',
+      rolls: [
+        {
+          formula: "1d20 + 7",
+          total: 17,
+          terms: [{ faces: 20, results: [{ result: 10, active: true }] }]
+        },
+        {
+          formula: "1d20 + 7",
+          total: 22,
+          terms: [{ faces: 20, results: [{ result: 15, active: true }] }]
+        },
+        {
+          formula: "3d10",
+          total: 12,
+          terms: [{ faces: 10, results: [{ result: 4, active: true }, { result: 5, active: true }, { result: 3, active: true }] }]
+        }
+      ]
+    };
+
+    const parsed = parseBeyond20ChatMessage(msg);
+    assert.equal(parsed.length, 2);
+    assert.equal(parsed[0].rollType, "attack");
+    assert.equal(parsed[0].rollMode, "advantage");
+    assert.equal(parsed[0].keptD20, 15);
+    assert.deepEqual(parsed[0].d20Values, [10, 15]);
+    assert.equal(parsed[0].total, 22);
+    assert.equal(parsed[1].rollType, "damage");
+    assert.equal(parsed[1].total, 12);
+  });
+
   it("parseBeyond20ChatMessage parses HTML-only Beyond20 cards, paired advantage, skills, saves, and ignores description-only cards", () => {
     const htmlPairedAdv = {
       id: "b20-html-1",

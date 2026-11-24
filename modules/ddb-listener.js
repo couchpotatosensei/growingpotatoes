@@ -1077,7 +1077,65 @@ export function parseBeyond20ChatMessage(message, data = {}) {
         ...(rollType === "damage" ? saveMeta : {})
       }));
     }
-    if (parsed.length > 0) return parsed;
+    if (parsed.length > 0) {
+      const isPureD20Roll = (entry) => entry
+        && Array.isArray(entry.dice)
+        && entry.dice.length >= 1
+        && entry.dice.every((d) => d.dieType === "d20");
+      let leadingD20Count = 0;
+      if (
+        parsed.length >= 2
+        && isPureD20Roll(parsed[0])
+        && isPureD20Roll(parsed[1])
+        && parsed[0].rollType === parsed[1].rollType
+      ) {
+        leadingD20Count = 2;
+        while (
+          leadingD20Count < parsed.length
+          && isPureD20Roll(parsed[leadingD20Count])
+          && parsed[leadingD20Count].rollType === parsed[0].rollType
+        ) {
+          leadingD20Count += 1;
+        }
+      }
+      if (leadingD20Count >= 2) {
+        const d20Entries = parsed.slice(0, leadingD20Count);
+        const d20List = d20Entries.flatMap((entry) => entry.dice.map((d) => d.dieValue));
+        const resolvedMode = d20Entries.find((entry) => entry.rollMode && entry.rollMode !== "normal")?.rollMode
+          || detectBeyond20RollMode(rawTitle, "", d20List, flags);
+        const keptVal = resolvedMode === "disadvantage"
+          ? Math.min(...d20List)
+          : (resolvedMode === "advantage" ? Math.max(...d20List) : d20List[0]);
+        let keptEntryIdx = d20Entries.findIndex((entry) => entry.dice.some((d) => d.dieValue === keptVal));
+        if (keptEntryIdx < 0) keptEntryIdx = 0;
+        const keptEntry = d20Entries[keptEntryIdx];
+        let keptMarked = false;
+        const combinedDice = d20List.map((val, idx) => {
+          const isKept = resolvedMode === "normal"
+            ? idx === 0
+            : (!keptMarked && val === keptVal);
+          if (isKept) keptMarked = true;
+          return { dieType: "d20", dieValue: val, dropped: !isKept };
+        });
+        const mergedLeading = finalizeBeyond20Roll({
+          id: `${messageId}-0`,
+          messageId,
+          characterName,
+          ddbCharacterId,
+          actionName,
+          rollType: keptEntry.rollType,
+          rollMode: resolvedMode,
+          dice: combinedDice,
+          total: keptEntry.total,
+          formula: keptEntry.formula || "2d20",
+          modifier: keptEntry.modifier,
+          damageType: keptEntry.damageType || "",
+          castLevel: rawCastLevel
+        });
+        return [mergedLeading, ...parsed.slice(leadingD20Count)];
+      }
+      return parsed;
+    }
   }
 
   // 2. Fallback: parse Beyond20 HTML (.beyond20-roll-cell or .dice-roll blocks) when Beyond20 posts HTML-only cards
