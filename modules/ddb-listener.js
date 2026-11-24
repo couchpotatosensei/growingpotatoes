@@ -822,14 +822,20 @@ function hasRecentMatchingChatMessage(roll, actor = null, dedupeKeys = null, win
 function detectBeyond20RollMode(textHint, formula, d20Values, flags = {}) {
   const hint = `${String(textHint || "")} ${String(flags.rollMode || flags.rollKind || "")}`.toLowerCase();
   const f = String(formula || "").toLowerCase();
-  const advFlag = flags.advantage;
-  if (advFlag === 1 || advFlag === true || hint.includes("advantage") && !hint.includes("disadvantage") || /\b\d*d20k?h\d*\b/.test(f)) {
+  const advFlag = flags.advantage ?? flags.request?.advantage;
+  const advNum = Number(advFlag);
+  if (
+    advNum === 3
+    || advNum === 6
+    || advFlag === true
+    || (hint.includes("advantage") && !hint.includes("disadvantage"))
+    || /\b\d*d20k?h\d*\b/.test(f)
+  ) {
     return "advantage";
   }
-  if (advFlag === 2 || hint.includes("disadvantage") || /\b\d*d20k?l\d*\b/.test(f)) {
+  if (advNum === 4 || advNum === 7 || hint.includes("disadvantage") || /\b\d*d20k?l\d*\b/.test(f)) {
     return "disadvantage";
   }
-  if (d20Values.length > 1) return "advantage";
   return "normal";
 }
 

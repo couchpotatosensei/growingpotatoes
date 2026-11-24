@@ -1801,10 +1801,10 @@ describe("D&D Beyond Game Log Listener", () => {
     const parsed = parseBeyond20ChatMessage(msg);
     assert.equal(parsed.length, 2);
     assert.equal(parsed[0].rollType, "attack");
-    assert.equal(parsed[0].rollMode, "advantage");
-    assert.equal(parsed[0].keptD20, 15);
+    assert.equal(parsed[0].rollMode, "normal");
+    assert.equal(parsed[0].keptD20, 10);
     assert.deepEqual(parsed[0].d20Values, [10, 15]);
-    assert.equal(parsed[0].total, 22);
+    assert.equal(parsed[0].total, 17);
     assert.equal(parsed[1].rollType, "damage");
     assert.equal(parsed[1].total, 12);
   });
@@ -3105,5 +3105,33 @@ describe("D&D Beyond Game Log Listener", () => {
     resetDdbDiagnostics();
     assert.equal(getDdbDiagnosticsStats().sources.beyond20Ws, 0);
     assert.equal(getRecentDdbRolls().length, 0);
+  });
+
+  it("Beyond20 Roll Twice (advantage: 1) parses as normal rollMode and omits Advantage badge on fallback card", () => {
+    const msg = {
+      id: "b20-roll-twice-1",
+      speaker: { alias: "Alden" },
+      flags: {
+        beyond20: {
+          title: "Stealth",
+          advantage: 1,
+          request: { type: "skill", name: "Stealth", advantage: 1 }
+        }
+      },
+      rolls: [
+        { formula: "1d20 + 5", total: 19, terms: [{ faces: 20, results: [{ result: 14 }] }] },
+        { formula: "1d20 + 5", total: 11, terms: [{ faces: 20, results: [{ result: 6 }] }] }
+      ],
+      content: '<div class="beyond20-message">Stealth</div>'
+    };
+
+    const parsed = parseBeyond20ChatMessage(msg);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].rollMode, "normal");
+    assert.deepEqual(parsed[0].d20Values, [14, 6]);
+
+    const cardHtml = buildDdbCustomChatCardHtml(parsed[0]);
+    assert.ok(!cardHtml.includes(">Advantage<"), "Roll Twice fallback card should not display Advantage badge");
+    assert.ok(cardHtml.includes(">19<") && cardHtml.includes(">11<"), "Fallback card should still display both d20 roll totals");
   });
 });
