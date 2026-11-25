@@ -88,14 +88,19 @@ test("openCombatEncounterWindow pops out ui.combat or falls back safely", () => 
   assert.ok(warned.includes("Combat Tracker"));
 });
 
-test("classifyChatMessageForPhone separates rolls from RP text messages", () => {
+test("classifyChatMessageForPhone separates rolls and system cards from user text messages", () => {
   assert.equal(classifyChatMessageForPhone({ content: "Hey, meet at the courtyard!" }), "text");
+  assert.equal(classifyChatMessageForPhone({ content: "<p>Hello <strong>party</strong>!</p>", style: 2 }), "text");
+  assert.equal(classifyChatMessageForPhone({ content: '<div class="phone-note">Ignored because fromPhone</div>', flags: { cheapdice: { fromPhone: true } } }), "text");
   assert.equal(classifyChatMessageForPhone({ content: "1d20+5", rolls: [{}] }), "roll");
   assert.equal(classifyChatMessageForPhone({ content: '<div class="cd-chat-card">Attack</div>' }), "roll");
   assert.equal(classifyChatMessageForPhone({ content: '<div class="cd-syslog-card">Server Notice</div>' }), "roll");
   assert.equal(classifyChatMessageForPhone({ content: "<div>Notice</div>", flags: { cheapdice: { systemLog: true } } }), "roll");
   assert.equal(classifyChatMessageForPhone({ content: '<div class="beyond20-message">Longsword</div>', rolls: [] }), "roll");
   assert.equal(classifyChatMessageForPhone({ content: "<div>Roll</div>", flags: { beyond20: {} } }), "roll");
+  assert.equal(classifyChatMessageForPhone({ content: '<div style="font-family: inherit;"><span>Spell Save DC</span><button class="cheapdice-dc-save-btn">DEX Save</button></div>', rolls: [] }), "roll");
+  assert.equal(classifyChatMessageForPhone({ content: "<p>Renji takes a Long Rest.</p>", flags: { dnd5e: { messageType: "rest" } }, rolls: [] }), "roll");
+  assert.equal(classifyChatMessageForPhone({ content: "Short Rest completed.", style: 0, rolls: [] }), "roll");
 });
 
 test("buildSystemLogMessageHtml escapes input and applies tone styling", () => {

@@ -422,12 +422,33 @@ export function toggleMessageReaction(reactions, emoji, userId) {
  */
 export function classifyChatMessageForPhone(msg) {
   if (!msg) return "text";
-  const hasRolls = Array.isArray(msg.rolls) ? msg.rolls.length > 0 : Boolean(msg.isRoll);
   const content = String(msg.content || "");
-  const isCustomCard = content.includes("cd-chat-card") || content.includes("dnd5e2");
-  const isSystemLogCard = content.includes("cd-syslog-card") || Boolean(msg?.flags?.[MODULE_ID]?.systemLog);
+  const moduleFlags = msg?.flags?.[MODULE_ID];
+  const isSystemLogCard = content.includes("cd-syslog-card")
+    || Boolean(moduleFlags?.systemLog || msg?.getFlag?.(MODULE_ID, "systemLog"));
+  if (isSystemLogCard) return "roll";
+
+  const isFromPhone = Boolean(moduleFlags?.fromPhone || msg?.getFlag?.(MODULE_ID, "fromPhone"));
+  if (isFromPhone) return "text";
+
+  const hasRolls = Array.isArray(msg.rolls) ? msg.rolls.length > 0 : Boolean(msg.isRoll);
+  const isCustomCard = content.includes("cd-chat-card")
+    || content.includes("dnd5e2")
+    || content.includes("chat-card")
+    || content.includes("cheapdice-dc-save-btn");
   const isBeyond20 = content.includes("beyond20-message") || content.includes("beyond20-") || Boolean(msg?.flags?.beyond20);
-  if (hasRolls || isCustomCard || isSystemLogCard || isBeyond20) return "roll";
+  const hasSystemModuleFlags = Boolean(
+    msg?.flags?.dnd5e
+    || msg?.flags?.["midi-qol"]
+    || msg?.flags?.rsr5e
+    || msg?.flags?.["ready-set-roll-5e"]
+  );
+  const isOtherStyle = msg.style === 0 || (msg.style === undefined && msg.type === 0);
+  const hasStructuredCardHtml = /<(?:div|section|table|button|form|fieldset|header|article|ul|ol|details)\b/i.test(content);
+
+  if (hasRolls || isCustomCard || isBeyond20 || hasSystemModuleFlags || isOtherStyle || hasStructuredCardHtml) {
+    return "roll";
+  }
   return "text";
 }
 
