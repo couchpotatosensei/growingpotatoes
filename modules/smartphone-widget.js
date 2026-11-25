@@ -4832,11 +4832,18 @@ function bindPhoneEvents(root) {
     renderPhoneContents();
   });
 
-  root.querySelector("[data-foundry-logout]")?.addEventListener("click", () => {
+  root.querySelector("[data-foundry-logout]")?.addEventListener("click", async () => {
+    if (typeof ui?.menu?.items?.logout?.onClick === "function") {
+      await ui.menu.items.logout.onClick();
+      return;
+    }
+    const menuLogoutBtn = ui?.menu?.element?.querySelector?.('[data-action="logout"]');
+    if (menuLogoutBtn) {
+      menuLogoutBtn.click();
+      return;
+    }
     if (typeof game?.logOut === "function") {
-      game.logOut();
-    } else {
-      ui?.menu?.items?.logout?.onClick?.();
+      await game.logOut();
     }
   });
 
