@@ -1,6 +1,6 @@
 import { renderTokenAcBadge } from "./token-ac.js";
 import { postStatCard } from "./stat-card.js";
-import { MODULE_ID, SETTINGS } from "../src/constants.js";
+import { MODULE_ID, SETTINGS, FLAGS } from "../src/constants.js";
 
 function getSetting(key, fallback = true) {
   if (game.settings.settings.has(`${MODULE_ID}.${key}`)) {
@@ -754,6 +754,18 @@ export function initTokenHud() {
     const hpContainer = bottomInput?.closest('.attribute');
 
     if (hpContainer) {
+      const isDdbHpLinked = Boolean(token.actor?.getFlag?.(MODULE_ID, FLAGS.DDB_HP_ENABLED));
+      const ddbHpLockTooltip = "HP editing is disabled while D&D Beyond sync is on so sheets don't desync. Update HP on D&D Beyond.";
+
+      if (bottomInput && isDdbHpLinked) {
+        bottomInput.disabled = true;
+        bottomInput.readOnly = true;
+        bottomInput.style.opacity = "0.55";
+        bottomInput.style.cursor = "not-allowed";
+        bottomInput.setAttribute("data-tooltip", ddbHpLockTooltip);
+        bottomInput.title = ddbHpLockTooltip;
+      }
+
       const btnRow = document.createElement("div");
       btnRow.className = "quick-hp-row";
       btnRow.style.cssText = `
@@ -765,13 +777,20 @@ export function initTokenHud() {
       gap: 3px;
       z-index: 100;
       pointer-events: auto;
+      ${isDdbHpLinked ? "opacity: 0.45; cursor: not-allowed;" : ""}
     `;
+      if (isDdbHpLinked) {
+        btnRow.setAttribute("data-tooltip", ddbHpLockTooltip);
+        btnRow.title = ddbHpLockTooltip;
+      }
 
       const createHpBtn = (delta, label) => {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.textContent = label;
-        btn.title = `${delta > 0 ? "Heal" : "Damage"} ${Math.abs(delta)}`;
+        btn.disabled = isDdbHpLinked;
+        btn.title = isDdbHpLinked ? ddbHpLockTooltip : `${delta > 0 ? "Heal" : "Damage"} ${Math.abs(delta)}`;
+        if (isDdbHpLinked) btn.setAttribute("data-tooltip", ddbHpLockTooltip);
         btn.style.cssText = `
         width: 36px;
         height: 28px;
@@ -780,7 +799,7 @@ export function initTokenHud() {
         font-weight: bold;
         padding: 0;
         margin: 0;
-        cursor: pointer;
+        cursor: ${isDdbHpLinked ? "not-allowed" : "pointer"};
         background: rgba(0, 0, 0, 0.85);
         color: #fff;
         border: 1px solid #7a7971;
@@ -792,7 +811,7 @@ export function initTokenHud() {
           event.stopPropagation();
 
           const actor = token.actor;
-          if (!actor) return;
+          if (!actor || actor.getFlag?.(MODULE_ID, FLAGS.DDB_HP_ENABLED)) return;
 
           let currentHp = Number(actor.system.attributes?.hp?.value ?? 0);
           const maxHp = Number(actor.system.attributes?.hp?.max ?? 0);

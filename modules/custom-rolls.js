@@ -4781,6 +4781,7 @@ Click a numbered modifier badge to execute a roll.</div>
     let compactTab = localStorage.getItem(COMPACT_TAB_STORAGE_KEY) || "abilities";
 
     const isDdbHpLinked = Boolean(actor?.getFlag?.(MODULE_ID, FLAGS.DDB_HP_ENABLED));
+    const DDB_HP_LOCK_TOOLTIP = "HP editing is disabled in Dice Stuff while D&D Beyond sync is on so sheets don't desync. Update HP on D&D Beyond.";
     const ddbHpLogoIcon = `<i class="fa-brands fa-d-and-d-beyond" style="font-size: 20px; color: #e40712; line-height: 1; display: inline-block; vertical-align: middle;" aria-hidden="true"></i>`;
     const vitalsSourceHeaderHtml = `
       <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; gap: 4px;">
@@ -4843,15 +4844,15 @@ Click a numbered modifier badge to execute a roll.</div>
             <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: space-between; padding: 1px 0;">
               <!-- HP Numbers & Action Buttons Row -->
               <div style="display: flex; align-items: center; justify-content: space-between; gap: 3px;">
-                <div style="display: flex; align-items: center; gap: 4px; min-width: 0;">
+                <div id="dice-stuff-hp-input-wrap" ${isDdbHpLinked ? `data-tooltip="${DDB_HP_LOCK_TOOLTIP}" title="${DDB_HP_LOCK_TOOLTIP}"` : ""} style="display: flex; align-items: center; gap: 4px; min-width: 0; opacity: ${isDdbHpLinked ? '0.55' : '1'}; cursor: ${isDdbHpLinked ? 'not-allowed' : 'default'};">
                   <span style="font-size: 0.85em; font-weight: 800; color: #b91c1c; display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
                     <i class="fas fa-heart"></i>
                   </span>
-                  <input type="text" id="dice-stuff-hp-input" value="${curHp}" title="Current HP (Supports 3 digits, absolute or deltas like -15, +10)" style="width: 38px; min-width: 38px; height: 22px; font-size: 0.88em; font-weight: 800; text-align: center; border-radius: 3px; border: 1px solid #cbd5e1; background: #fff; padding: 0 1px; flex-shrink: 0;" />
+                  <input type="text" id="dice-stuff-hp-input" value="${curHp}" ${isDdbHpLinked ? 'disabled' : ''} title="${isDdbHpLinked ? DDB_HP_LOCK_TOOLTIP : 'Current HP (Supports 3 digits, absolute or deltas like -15, +10)'}" style="width: 38px; min-width: 38px; height: 22px; font-size: 0.88em; font-weight: 800; text-align: center; border-radius: 3px; border: 1px solid #cbd5e1; background: #fff; padding: 0 1px; flex-shrink: 0; cursor: ${isDdbHpLinked ? 'not-allowed' : 'text'};" />
                   <span id="dice-stuff-hp-max-label" style="font-size: 0.82em; color: #555; font-weight: 700; white-space: nowrap; flex-shrink: 0;">/ ${maxHp}</span>
                 </div>
-                <div style="display: flex; align-items: center; gap: 3px; flex-shrink: 0;">
-                  <button type="button" id="dice-stuff-hp-config-btn" title="Configure Hit Points" style="width: 22px; min-width: 22px; max-width: 22px; height: 22px; font-size: 0.78em; padding: 0; border-radius: 3px; border: 1px solid #cbd5e1; background: #fff; color: #64748b; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                <div id="dice-stuff-hp-config-wrap" ${isDdbHpLinked ? `data-tooltip="${DDB_HP_LOCK_TOOLTIP}" title="${DDB_HP_LOCK_TOOLTIP}"` : ""} style="display: flex; align-items: center; gap: 3px; flex-shrink: 0; opacity: ${isDdbHpLinked ? '0.45' : '1'}; cursor: ${isDdbHpLinked ? 'not-allowed' : 'default'};">
+                  <button type="button" id="dice-stuff-hp-config-btn" ${isDdbHpLinked ? 'disabled' : ''} title="${isDdbHpLinked ? DDB_HP_LOCK_TOOLTIP : 'Configure Hit Points'}" style="width: 22px; min-width: 22px; max-width: 22px; height: 22px; font-size: 0.78em; padding: 0; border-radius: 3px; border: 1px solid #cbd5e1; background: #fff; color: #64748b; cursor: ${isDdbHpLinked ? 'not-allowed' : 'pointer'}; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;">
                     <i class="fas fa-cog" style="margin: 0;"></i>
                   </button>
                 </div>
@@ -4865,9 +4866,11 @@ Click a numbered modifier badge to execute a roll.</div>
 
               <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 700; color: #64748b; padding: 0 1px; min-height: 18px;">
                 <span id="dice-stuff-hp-pct-label">${hpPct}% HP</span>
-                <button type="button" id="dice-stuff-thp-btn" title="Click to set or adjust Temporary HP" style="min-width: 36px !important; width: auto !important; max-width: 48px !important; height: 18px; font-size: 11px; font-weight: 700; padding: 0 4px !important; margin: 0 !important; border-radius: 3px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 3px; white-space: nowrap; flex-shrink: 0; line-height: 16px; box-sizing: border-box; ${tempHp > 0 ? 'background: #e0f2fe; color: #0284c7; border: 1px solid #7dd3fc;' : 'background: #fff; color: #64748b; border: 1px dashed #cbd5e1;'}">
-                  ${tempHp > 0 ? `<i class="fas fa-heart" style="color: #0284c7; font-size: 11px;"></i><span style="font-size: 12px; font-weight: 800;">${tempHp}</span>` : `<i class="fas fa-plus" style="font-size: 10px;"></i>THP`}
-                </button>
+                <span id="dice-stuff-thp-wrap" ${isDdbHpLinked ? `data-tooltip="${DDB_HP_LOCK_TOOLTIP}" title="${DDB_HP_LOCK_TOOLTIP}"` : ""} style="display: inline-flex; opacity: ${isDdbHpLinked ? '0.55' : '1'}; cursor: ${isDdbHpLinked ? 'not-allowed' : 'default'};">
+                  <button type="button" id="dice-stuff-thp-btn" ${isDdbHpLinked ? 'disabled' : ''} title="${isDdbHpLinked ? DDB_HP_LOCK_TOOLTIP : 'Click to set or adjust Temporary HP'}" style="min-width: 36px !important; width: auto !important; max-width: 48px !important; height: 18px; font-size: 11px; font-weight: 700; padding: 0 4px !important; margin: 0 !important; border-radius: 3px; cursor: ${isDdbHpLinked ? 'not-allowed' : 'pointer'}; display: inline-flex; align-items: center; justify-content: center; gap: 3px; white-space: nowrap; flex-shrink: 0; line-height: 16px; box-sizing: border-box; ${tempHp > 0 ? 'background: #e0f2fe; color: #0284c7; border: 1px solid #7dd3fc;' : 'background: #fff; color: #64748b; border: 1px dashed #cbd5e1;'}">
+                    ${tempHp > 0 ? `<i class="fas fa-heart" style="color: #0284c7; font-size: 11px;"></i><span style="font-size: 12px; font-weight: 800;">${tempHp}</span>` : `<i class="fas fa-plus" style="font-size: 10px;"></i>THP`}
+                  </button>
+                </span>
               </div>
             </div>
 
@@ -7122,6 +7125,11 @@ Click a numbered modifier badge to execute a roll.</div>
         const thpBtn = html.find("#dice-stuff-thp-btn");
 
         const applyHpInput = async function (el) {
+          if (actor?.getFlag?.(MODULE_ID, FLAGS.DDB_HP_ENABLED)) {
+            const liveCur = Number(actor.system?.attributes?.hp?.value) || 0;
+            $(el).val(liveCur);
+            return;
+          }
           const rawVal = $(el).val().trim();
           if (!rawVal) return;
 
@@ -7193,6 +7201,7 @@ Click a numbered modifier badge to execute a roll.</div>
         thpBtn.on("click", async (e) => {
           e.preventDefault();
           e.stopPropagation();
+          if (actor?.getFlag?.(MODULE_ID, FLAGS.DDB_HP_ENABLED)) return;
           const currentTemp = Number(actor.system?.attributes?.hp?.temp) || 0;
           new Dialog({
             title: `Temporary HP: ${actor.name}`,
@@ -7237,6 +7246,7 @@ Click a numbered modifier badge to execute a roll.</div>
         html.find("#dice-stuff-hp-config-btn").on("click", async (e) => {
           e.preventDefault();
           e.stopPropagation();
+          if (actor?.getFlag?.(MODULE_ID, FLAGS.DDB_HP_ENABLED)) return;
           try {
             const HpConfigClass =
               globalThis.dnd5e?.applications?.actor?.HitPointsConfig ||
@@ -7830,9 +7840,7 @@ Click a numbered modifier badge to execute a roll.</div>
         });
 
         // HP Source Mode Toggle (Foundry vs D&D Beyond)
-        html.on("change", "#ddb-hp-source-switch", async function () {
-          const enabled = $(this).is(":checked");
-          await actor.setFlag(MODULE_ID, FLAGS.DDB_HP_ENABLED, enabled);
+        const syncDdbHpLockUi = (enabled) => {
           html.find("#ddb-hp-source-wrap").attr("title", enabled ? "HP Source: D&D Beyond (click to switch to Foundry)" : "HP Source: Foundry Sheet (click to switch to D&D Beyond)");
           html.find("#ddb-hp-fvtt-icon").css({ opacity: enabled ? "0.35" : "1", filter: enabled ? "grayscale(1)" : "none" });
           html.find("#ddb-hp-ddb-icon").css({ opacity: enabled ? "1" : "0.35", filter: enabled ? "none" : "grayscale(1)" });
@@ -7848,6 +7856,38 @@ Click a numbered modifier badge to execute a roll.</div>
               cursor: enabled ? "pointer" : "not-allowed",
               opacity: enabled ? "1" : "0.45"
             });
+
+          const setTip = (el, tip) => {
+            if (tip) el.attr({ "data-tooltip": tip, title: tip });
+            else el.removeAttr("data-tooltip").removeAttr("title");
+          };
+
+          html.find("#dice-stuff-hp-input-wrap").css({ opacity: enabled ? "0.55" : "1", cursor: enabled ? "not-allowed" : "default" });
+          setTip(html.find("#dice-stuff-hp-input-wrap"), enabled ? DDB_HP_LOCK_TOOLTIP : "");
+          hpInput
+            .prop("disabled", enabled)
+            .attr("title", enabled ? DDB_HP_LOCK_TOOLTIP : "Current HP (Supports 3 digits, absolute or deltas like -15, +10)")
+            .css("cursor", enabled ? "not-allowed" : "text");
+
+          html.find("#dice-stuff-hp-config-wrap").css({ opacity: enabled ? "0.45" : "1", cursor: enabled ? "not-allowed" : "default" });
+          setTip(html.find("#dice-stuff-hp-config-wrap"), enabled ? DDB_HP_LOCK_TOOLTIP : "");
+          html.find("#dice-stuff-hp-config-btn")
+            .prop("disabled", enabled)
+            .attr("title", enabled ? DDB_HP_LOCK_TOOLTIP : "Configure Hit Points")
+            .css("cursor", enabled ? "not-allowed" : "pointer");
+
+          html.find("#dice-stuff-thp-wrap").css({ opacity: enabled ? "0.55" : "1", cursor: enabled ? "not-allowed" : "default" });
+          setTip(html.find("#dice-stuff-thp-wrap"), enabled ? DDB_HP_LOCK_TOOLTIP : "");
+          thpBtn
+            .prop("disabled", enabled)
+            .attr("title", enabled ? DDB_HP_LOCK_TOOLTIP : "Click to set or adjust Temporary HP")
+            .css("cursor", enabled ? "not-allowed" : "pointer");
+        };
+
+        html.on("change", "#ddb-hp-source-switch", async function () {
+          const enabled = $(this).is(":checked");
+          await actor.setFlag(MODULE_ID, FLAGS.DDB_HP_ENABLED, enabled);
+          syncDdbHpLockUi(enabled);
         });
 
         html.on("click", "#btn-sync-ddb-hp", async function (e) {
